@@ -60,7 +60,7 @@ class CaptureMonitor:
         self.pattern = pattern
         self.files = {}  # path -> {size, mtime, events}
         self._scan()
-    
+
     def _scan(self):
         import glob
         paths = glob.glob(self.pattern)
@@ -75,7 +75,7 @@ class CaptureMonitor:
                     'events': 0,
                     'last_check': time.time(),
                 }
-    
+
     def get_active_files(self) -> List[Path]:
         """Return files modified in last 60s (active captures)."""
         self._scan()
@@ -85,7 +85,7 @@ class CaptureMonitor:
             if now - info['mtime'] < 60:
                 active.append(info['path'])
         return active
-    
+
     def get_file_stats(self, path: Path) -> dict:
         stat = path.stat()
         return {
@@ -99,7 +99,7 @@ class CaptureMonitor:
 def run_health_check(filepath: Path) -> dict:
     """Stream-read JSONL and compute health metrics."""
     import gzip
-    
+
     result = {
         'filepath': str(filepath),
         'filename': filepath.name,
@@ -116,34 +116,34 @@ def run_health_check(filepath: Path) -> dict:
         'errors': [],
         'is_healthy': False,
     }
-    
+
     opener = gzip.open if str(filepath).endswith('.gz') else open
     prev_ts = None
-    
+
     try:
         with opener(filepath, 'rt') as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 try:
                     rec = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                
+
                 result['total_events'] += 1
-                
+
                 etype = rec.get('event_type')
                 if etype == 'trade':
                     result['trade_events'] += 1
                 elif etype == 'depth':
                     result['depth_events'] += 1
-                
+
                 sym = rec.get('symbol', '')
                 if sym:
                     result['symbols'].add(sym)
-                
+
                 ts_str = rec.get('ts_event') or rec.get('ts_recv')
                 if ts_str:
                     ts = None
@@ -153,12 +153,12 @@ def run_health_check(filepath: Path) -> dict:
                         ts = datetime.fromisoformat(ts_str)
                     except:
                         pass
-                    
+
                     if ts:
                         if result['start_ts'] is None:
                             result['start_ts'] = ts
                         result['end_ts'] = ts
-                        
+
                         if prev_ts:
                             gap = (ts - prev_ts).total_seconds()
                             if gap > HEALTH_MAX_GAP_SECS:
@@ -168,33 +168,33 @@ def run_health_check(filepath: Path) -> dict:
     except Exception as e:
         result['errors'].append(str(e))
         return result
-    
+
     # Compute rates
     if result['start_ts'] and result['end_ts']:
         result['duration_seconds'] = (result['end_ts'] - result['start_ts']).total_seconds()
         if result['duration_seconds'] > 0:
             result['events_per_sec'] = result['total_events'] / result['duration_seconds']
-    
+
     # Health determination
     result['is_healthy'] = (
         result['total_events'] >= MIN_EVENTS_FOR_BACKTEST and
         result['events_per_sec'] >= HEALTH_MIN_EVTS_PER_SEC and
         result['gap_count'] <= 10  # some gap tolerance
     )
-    
+
     # Convert set to list for JSON serialization
     result['symbols'] = sorted(list(result['symbols']))
-    
+
     return result
 
 def write_health_report(health: dict, output_dir: Path):
     """Write capture_health.json and capture_health.md."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # JSON
     json_path = output_dir / "capture_health.json"
     json_path.write_text(json.dumps(health, indent=2, default=str))
-    
+
     # Markdown
     md = f"""# Capture Health Report
 **File:** {health['filename']}
@@ -229,28 +229,28 @@ def write_health_report(health: dict, output_dir: Path):
 def run_backtest(filepath: Path, output_dir: Path) -> dict:
     """Run full replay backtest and export artifacts."""
     log(f"Running backtest on {filepath.name}...")
-    
+
     eng = OrderflowReplay(bar_secs=5)
     eng.load_jsonl(filepath)
     eng.replay()
-    
+
     # Export artifacts
     eng.export(output_dir)
-    
+
     # Compute metrics
     trades = eng.trades
     n = len(trades)
-    
+
     if n == 0:
         return {"error": "No trades generated"}
-    
+
     winners = [t for t in trades if t.pnl > 0]
     losers = [t for t in trades if t.pnl <= 0]
     wn, ln = len(winners), len(losers)
-    
+
     gross_profit = sum(t.pnl for t in winners)
     gross_loss = sum(t.pnl for t in losers)
-    
+
     metrics = {
         "total_trades": n,
         "win_rate": wn / n * 100 if n else 0,
@@ -272,13 +272,13 @@ def run_backtest(filepath: Path, output_dir: Path) -> dict:
         "sweep_events": len(eng.sweeps),
         "signal_count": len(eng.signals),
     }
-    
+
     # Execution breakdown
     reasons = defaultdict(int)
     for t in trades:
         reasons[t.exit_reason] += 1
     metrics['execution_breakdown'] = dict(reasons)
-    
+
     return metrics
 
 def compute_max_drawdown(trades) -> float:
@@ -312,7 +312,7 @@ def write_summary_json(metrics: dict, output_dir: Path):
 def write_summary_md(metrics: dict, output_dir: Path):
     """Write human-readable replay_report.md."""
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     md = f"""# Automated Backtest Report
 Generated: {datetime.now().isoformat()}
 
@@ -344,57 +344,96 @@ Generated: {datetime.now().isoformat()}
     for reason, count in metrics.get('execution_breakdown', {}).items():
         pct = count / metrics['total_trades'] * 100 if metrics['total_trades'] else 0
         md += f"- **{reason}**: {count} ({pct:.0f}%)\n"
-    
+
     (output_dir / "replay_report.md").write_text(md)
 
 # ─── Notification ───────────────────────────────────────────────────────────
 
-def send_whatsapp_notification(metrics: dict, health: Optional[dict]):
-    """Send short WhatsApp status update."""
-    # Build message
-    status = "🟢 HEALTHY" if (health and health.get('is_healthy')) else "🔴 UNHEALTHY"
-    
+def write_status_md(metrics: dict, health: Optional[dict], output_dir: Path):
+    """Write human-readable status.md - always succeeds, no external calls."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    status = "HEALTHY" if (health and health.get('is_healthy')) else "UNHEALTHY"
+    ts = datetime.now().isoformat()
+
     lines = [
-        f"📊 Bookmap Replay Update",
-        f"Status: {status}",
-        f"Events: {health.get('total_events', 0):,}" if health else "",
-        f"Trades: {metrics.get('total_trades', 0)}",
-        f"Win Rate: {metrics.get('win_rate', 0):.1f}%",
-        f"PnL: ${metrics.get('gross_pnl', 0):+.2f}",
-        f"Expectancy: ${metrics.get('expectancy', 0):+.2f}",
+        f"# Pipeline Status - {ts}",
+        f"",
+        f"## Capture",
+        f"- Status: {status}",
+        f"- File: {health.get('filename', 'N/A') if health else 'N/A'}",
+        f"- Events: {health.get('total_events', 0):,}" if health else "- Events: N/A",
+        f"- Events/sec: {health.get('events_per_sec', 0):.1f}" if health else "- Events/sec: N/A",
+        f"",
+        f"## Backtest",
+        f"- Trades: {metrics.get('total_trades', 0)}",
+        f"- Win Rate: {metrics.get('win_rate', 0):.1f}%",
+        f"- PnL: ${metrics.get('gross_pnl', 0):+.2f}",
+        f"- Expectancy: ${metrics.get('expectancy', 0):+.2f}",
+        f"- Profit Factor: {metrics.get('profit_factor', 0):.2f}",
+        f"- Max Drawdown: ${metrics.get('max_drawdown', 0):.2f}",
+        f"- Best Trade: ${metrics.get('best_trade', 0):.2f}",
+        f"- Worst Trade: ${metrics.get('worst_trade', 0):.2f}",
+        f"",
+        f"## Execution Breakdown",
     ]
-    
+
+    for reason, count in metrics.get('execution_breakdown', {}).items():
+        pct = count / metrics.get('total_trades', 1) * 100
+        lines.append(f"- {reason}: {count} ({pct:.0f}%)")
+
+    lines.append("")
+
     if health and health.get('errors'):
-        lines.append(f"⚠️ Errors: {len(health['errors'])}")
-        for e in health['errors'][:3]:
-            lines.append(f"  - {e}")
-    
-    msg = '\n'.join(l for l in lines if l)
-    
-    # Write to notification file for OpenClaw to pick up
-    # In a real implementation, this would use OpenClaw's messaging system
-    log(f"[NOTIFY] {msg.replace(chr(10), ' | ')}")
-    
-    # Try to use openclaw command for WhatsApp
+        lines.append("## Errors")
+        for e in health['errors'][:5]:
+            lines.append(f"- {e}")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("Next check in ~30 seconds. This file updates every pipeline pass.")
+
+    (output_dir / "status.md").write_text('\n'.join(lines))
+
+def send_whatsapp_notification(metrics: dict, health: Optional[dict], output_dir: Path):
+    """Send short WhatsApp status update via OpenClaw CLI (best-effort)."""
+    status = "HEALTHY" if (health and health.get('is_healthy')) else "UNHEALTHY"
+    ts = datetime.now().strftime('%H:%M')
+
+    msg = (
+        f"📊 Replay {ts} | {status} | "
+        f"Trades:{metrics.get('total_trades',0)} "
+        f"WR:{metrics.get('win_rate',0):.0f}% "
+        f"PnL:${metrics.get('gross_pnl',0):+.0f} "
+        f"Exp:${metrics.get('expectancy',0):+.0f}"
+    )
+
+    # Log to stdout only - NEVER retry or call LLM APIs here
+    log(f"[NOTIFY] {msg}")
+
+    # Best-effort OpenClaw CLI send - one-shot, short timeout, swallow errors
     try:
         subprocess.run(
             ["openclaw", "send", "whatsapp", "+15515747457", msg],
-            capture_output=True, timeout=10
+            capture_output=True, timeout=5
         )
-    except:
-        pass  # Fallback: just log
+    except Exception:
+        pass  # Silently ignore - status.md has the data
+
+    # Always write status.md as fallback
+    write_status_md(metrics, health, output_dir)
 
 # ─── Main Pipeline ──────────────────────────────────────────────────────────
 
 def run_single_pass(args) -> Tuple[Optional[dict], Optional[dict]]:
     """Run one pass of detect → health → backtest → report."""
     import glob
-    
+
     files = sorted(glob.glob(args.input))
     if not files:
         log("No JSONL files found")
         return None, None
-    
+
     # Pick most recently modified NON-EMPTY file
     files_with_mtime = [
         (Path(f), Path(f).stat().st_mtime, Path(f).stat().st_size)
@@ -404,37 +443,37 @@ def run_single_pass(args) -> Tuple[Optional[dict], Optional[dict]]:
     if not files_with_mtime:
         log("No non-empty JSONL files found")
         return None, None
-    
+
     files_with_mtime.sort(key=lambda x: x[1], reverse=True)
     filepath = files_with_mtime[0][0]
-    
+
     log(f"Processing: {filepath.name}")
-    
+
     # Health check
     health = run_health_check(filepath)
     write_health_report(health, Path(args.output_dir))
-    
+
     if not health['is_healthy']:
         warn(f"Health check failed for {filepath.name}: {health.get('errors', [])}")
         return None, health
-    
+
     ok(f"Health check passed: {health['total_events']:,} events, "
        f"{health['events_per_sec']:.1f} evt/s")
-    
+
     # Backtest
     metrics = run_backtest(filepath, Path(args.output_dir))
-    
+
     if 'error' in metrics:
         warn(f"Backtest failed: {metrics['error']}")
         return metrics, health
-    
+
     # Write reports
     write_summary_json(metrics, Path(args.output_dir))
     write_summary_md(metrics, Path(args.output_dir))
-    
+
     ok(f"Backtest complete: {metrics['total_trades']} trades, "
        f"{metrics['win_rate']:.1f}% WR, ${metrics['gross_pnl']:+.2f}")
-    
+
     return metrics, health
 
 def main():
@@ -446,18 +485,18 @@ def main():
     ap.add_argument('--once', action='store_true', help='Run once and exit (no loop)')
     ap.add_argument('--min-events', type=int, default=MIN_EVENTS_FOR_BACKTEST, help='Min events for backtest')
     args = ap.parse_args()
-    
+
     # Update global config (must be module-level assignment, not local redefinition)
     import run_bookmap_replay_pipeline as mod
     mod.MIN_EVENTS_FOR_BACKTEST = args.min_events
     log(f"Minimum events threshold: {mod.MIN_EVENTS_FOR_BACKTEST}")
-    
+
     log(f"Starting Bookmap Replay Pipeline")
     log(f"  Input: {args.input}")
     log(f"  Output: {args.output_dir}")
     log(f"  Interval: {args.interval_minutes} minutes")
     log(f"  Notify: {args.notify}")
-    
+
     # Handle graceful shutdown
     running = True
     def on_sigint(signum, frame):
@@ -466,18 +505,18 @@ def main():
         running = False
     signal.signal(signal.SIGINT, on_sigint)
     signal.signal(signal.SIGTERM, on_sigint)
-    
+
     if args.once:
         metrics, health = run_single_pass(args)
-        if args.notify == 'whatsapp' and metrics:
-            send_whatsapp_notification(metrics, health)
+        if metrics:
+            send_whatsapp_notification(metrics, health, Path(args.output_dir))
         return
-    
+
     # Loop mode
     last_notify = 0
     last_metrics = None
     last_health = None
-    
+
     while running:
         try:
             metrics, health = run_single_pass(args)
@@ -485,25 +524,29 @@ def main():
                 last_metrics = metrics
             if health:
                 last_health = health
-            
-            # Send notification on interval
+
+            # Always write status.md (no external dependencies)
+            if last_metrics:
+                write_status_md(last_metrics, last_health, Path(args.output_dir))
+
+            # Send notification on interval (best-effort, no retries)
             now = time.time()
             if args.notify == 'whatsapp' and (now - last_notify) >= args.interval_minutes * 60:
                 if last_metrics:
-                    send_whatsapp_notification(last_metrics, last_health)
+                    send_whatsapp_notification(last_metrics, last_health, Path(args.output_dir))
                     last_notify = now
-            
+
         except Exception as e:
             error(f"Pipeline error: {e}")
             import traceback
             traceback.print_exc()
-        
+
         # Sleep before next check
         for _ in range(30):  # Check every 30s, but allow early exit
             if not running:
                 break
             time.sleep(1)
-    
+
     log("Pipeline stopped")
 
 if __name__ == '__main__':
