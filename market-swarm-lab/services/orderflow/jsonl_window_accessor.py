@@ -268,10 +268,9 @@ class JsonlWindowAccessor:
                 return False, f"Non-monotonic: {event['ts']} after {last_ts}"
             last_ts = event['ts']
         
-        # Check: No duplicates
-        ts_list = [e['ts'] for e in events]
-        if len(ts_list) != len(set(ts_list)):
-            return False, "Duplicate timestamps detected"
+        # NOTE: Duplicates ARE allowed. Multiple trades at same millisecond
+        # is legitimate market data (fast markets, batch processing, etc).
+        # This is NOT lookahead bias - order within a ms is unknown.
         
         return True, "OK"
     
