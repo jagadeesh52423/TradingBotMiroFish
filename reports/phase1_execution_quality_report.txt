@@ -1,0 +1,81 @@
+🚀 PHASE 1 EXECUTION QUALITY - TOP 32 ALERTS
+===========================================================================
+
+📊 SUMMARY: 32 alerts
+Winners (>1R): 0 | Losers: 17 | Breakeven: 15
+Avg R-Multiple: -0.53R | Avg Confidence: 72%
+
+ANALYSIS:
+
+(1) Do alerts match Reddit workflow?
+    ✓ Phase 1 Absorption (tape accel + continuation)
+    ✓ Deduped: 120s grouping + 10min cooldown
+    ✓ Top 32 by confidence
+
+(2) Are entries timed correctly?
+    ✓ All entries intraday, tape acceleration detected
+    ✓ Avg hold: 300s (5.0min)
+
+(3) Still entering weak continuation?
+    Weak entries (<70%): 0/32 (0%)
+
+(4) Would you personally trade these live?
+    Win rate: 0%
+    Risk/reward ratio: -0.53R avg
+    → MAYBE - borderline, need discretion
+
+🟢 TOP 10 BEST:
+1. ESM6.CME@RITHMIC LONG | $727.75@12:42 | T1:$735.03
+   TIMEOUT $727.75 | Conf:83% Tape:0.75 Cont:83% | 0.00R | NO-Loss
+2. ESM6.CME@RITHMIC LONG | $2785.25@13:40 | T1:$2813.10
+   TIMEOUT $2785.25 | Conf:77% Tape:0.75 Cont:77% | 0.00R | NO-Loss
+3. ESM6.CME@RITHMIC LONG | $6800.00@12:51 | T1:$6868.00
+   TIMEOUT $6800.00 | Conf:77% Tape:0.75 Cont:77% | 0.00R | NO-Loss
+4. ESM6.CME@RITHMIC LONG | $6800.00@14:00 | T1:$6868.00
+   TIMEOUT $6800.00 | Conf:77% Tape:0.75 Cont:77% | 0.00R | NO-Loss
+5. ESM6.CME@RITHMIC LONG | $6800.00@16:28 | T1:$6868.00
+   TIMEOUT $6800.00 | Conf:77% Tape:0.75 Cont:77% | 0.00R | NO-Loss
+6. ESM6.CME@RITHMIC LONG | $6800.00@14:45 | T1:$6868.00
+   TIMEOUT $6800.00 | Conf:76% Tape:0.75 Cont:76% | 0.00R | NO-Loss
+7. ESM6.CME@RITHMIC LONG | $7280.00@12:53 | T1:$7352.80
+   TIMEOUT $7280.00 | Conf:72% Tape:0.75 Cont:72% | 0.00R | NO-Loss
+8. ESM6.CME@RITHMIC LONG | $6900.00@12:51 | T1:$6969.00
+   TIMEOUT $6900.00 | Conf:72% Tape:0.75 Cont:72% | 0.00R | NO-Loss
+9. ESM6.CME@RITHMIC LONG | $6900.00@13:25 | T1:$6969.00
+   TIMEOUT $6900.00 | Conf:71% Tape:0.75 Cont:71% | 0.00R | NO-Loss
+10. ESM6.CME@RITHMIC LONG | $6900.00@14:00 | T1:$6969.00
+   TIMEOUT $6900.00 | Conf:71% Tape:0.75 Cont:71% | 0.00R | NO-Loss
+
+🔴 BOTTOM 10 WORST:
+1. ESM6.CME@RITHMIC SHORT | $7400.00@15:06 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:71% Tape:0.75 Cont:71% | -1.00R | NO-Poor
+2. ESM6.CME@RITHMIC SHORT | $7400.00@15:38 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:71% Tape:0.75 Cont:71% | -1.00R | NO-Poor
+3. ESM6.CME@RITHMIC SHORT | $7400.00@15:48 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:71% Tape:0.75 Cont:71% | -1.00R | NO-Poor
+4. ESM6.CME@RITHMIC SHORT | $7400.00@15:59 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:71% Tape:0.75 Cont:71% | -1.00R | NO-Poor
+5. ESM6.CME@RITHMIC SHORT | $7400.00@16:10 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:71% Tape:0.75 Cont:71% | -1.00R | NO-Poor
+6. ESM6.CME@RITHMIC SHORT | $7400.00@16:24 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:71% Tape:0.75 Cont:71% | -1.00R | NO-Poor
+7. ESM6.CME@RITHMIC SHORT | $7400.00@13:44 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:70% Tape:0.75 Cont:70% | -1.00R | NO-Poor
+8. ESM6.CME@RITHMIC SHORT | $7400.00@13:57 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:70% Tape:0.75 Cont:70% | -1.00R | NO-Poor
+9. ESM6.CME@RITHMIC SHORT | $7400.00@15:16 | T1:$7326.00
+   TARGET1_HIT $7326.00 | Conf:70% Tape:0.75 Cont:70% | -1.00R | NO-Poor
+10. ESM6.CME@RITHMIC SHORT | $7295.00@12:15 | T1:$7222.05
+   TARGET1_HIT $7222.05 | Conf:70% Tape:0.75 Cont:70% | -1.00R | NO-Poor
+
+🟡 BORDERLINE 5 (Near 0R - discretionary):
+1. ESM6.CME@RITHMIC LONG | $727.75@12:42 | T1:$735.03
+   TIMEOUT $727.75 | Conf:83% | 0.00R | MAYBE-Call it
+2. ESM6.CME@RITHMIC LONG | $2785.25@13:40 | T1:$2813.10
+   TIMEOUT $2785.25 | Conf:77% | 0.00R | MAYBE-Call it
+3. ESM6.CME@RITHMIC LONG | $6800.00@12:51 | T1:$6868.00
+   TIMEOUT $6800.00 | Conf:77% | 0.00R | MAYBE-Call it
+4. ESM6.CME@RITHMIC LONG | $6800.00@14:00 | T1:$6868.00
+   TIMEOUT $6800.00 | Conf:77% | 0.00R | MAYBE-Call it
+5. ESM6.CME@RITHMIC LONG | $6800.00@16:28 | T1:$6868.00
+   TIMEOUT $6800.00 | Conf:77% | 0.00R | MAYBE-Call it

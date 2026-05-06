@@ -1,0 +1,183 @@
+================================================================================
+LIVE RESEARCH MODE ACTIVATED
+================================================================================
+
+Date: 2026-05-06 10:41 PDT
+Status: Phase 1.6 LIVE + Phase 2 RESEARCH
+
+================================================================================
+WHAT'S RUNNING TODAY
+================================================================================
+
+TRACK 1: Phase 1.6 Live Observational Alerts
+- Real-time regime gating (BULL/BEAR/TRANSITION)
+- Alert generation from live orderflow
+- Deduplication enabled
+- Early entry logic enabled
+- NO EXECUTION (observational only)
+
+Output: Live alerts generated throughout day
+Deliverable: today_live_review.md (tonight)
+
+TRACK 2: Phase 2 Trapped-Trader Research
+- Failed breakout detection (built)
+- Trapped trader scoring (built)
+- Liquidity refill detection (built)
+- Reversal acceleration detection (built)
+- Early exit signals (built)
+
+Output: Backtest replay tonight
+Deliverable: phase2_vs_phase1_6.md (tonight)
+
+TRACK 3: Out-of-Sample Validation
+- Bearish session replay (tonight)
+- Chop/rotational session replay (tonight)
+- Same thresholds (no optimization)
+
+Output: Robustness testing
+Deliverable: out_of_sample_phase2.md (tonight)
+
+================================================================================
+TODAY'S PRIORITIES
+================================================================================
+
+PRIORITY 1: Live Alert Collection
+- Phase 1.6 generating alerts throughout session
+- Manual WhatsApp notifications as alerts fire
+- Real-time regime detection validation
+- Document entry patterns
+
+PRIORITY 2: Visual Validation
+- Review alerts in Bookmap as they occur
+- Check visual/contextual match
+- Manual classification (GOOD/BORDERLINE/BAD)
+- Note any discrepancies
+
+PRIORITY 3: Data Capture
+- Live alerts saved to CSV
+- Screenshot timestamps logged
+- Orderflow context captured
+- Alert classifications recorded
+
+================================================================================
+TONIGHT'S BACKTEST PLAN
+================================================================================
+
+Step 1: Replay today's session with Phase 2
+- Compare Phase 1.6 vs Phase 2
+- Measure early exit signals triggered
+- Calculate impact on stops/targets
+- Document improvements/issues
+
+Step 2: Bearish session replay
+- Use different market session (downtrend)
+- Same Phase 2 thresholds (no changes)
+- Test SHORT performance
+- Validate regime generalization
+
+Step 3: Chop/rotational replay
+- Use choppy/mean-reversion session
+- Same Phase 2 thresholds
+- Test transition regime
+- Check robustness
+
+================================================================================
+KEY METRICS TO WATCH TODAY
+================================================================================
+
+Phase 1.6 Baseline (from 2026-05-05):
+- 9 alerts accepted (out of 32)
+- Win rate: 77.8%
+- Profit factor: 3.89x
+- Total R: 5.78R
+- Validation score: 96.8% mean
+
+Today's Target:
+- Replicate 70%+ win rate
+- Maintain visual workflow alignment
+- Generate clean alert data
+- Support tonight's backtests
+
+================================================================================
+WHAT'S NOT HAPPENING
+================================================================================
+
+❌ NO LIVE TRADING
+❌ NO AUTONOMOUS EXECUTION
+❌ NO POSITION SCALING
+❌ NO THRESHOLD OPTIMIZATION
+❌ NO PRODUCTION DEPLOYMENT
+
+This is RESEARCH MODE ONLY.
+All outputs are for analysis and review.
+Manual validation required for all decisions.
+
+================================================================================
+TOMORROW'S DECISION GATE
+================================================================================
+
+Go to Phase 2 Trading IF:
+✓ Today's live review passes
+✓ Phase 2 backtest shows improvement
+✓ Out-of-sample tests hold up
+✓ Team confidence sufficient
+
+Hold/Iterate IF:
+✗ Phase 2 over-filters winners
+✗ Out-of-sample tests fail
+✗ Early exits too frequent
+✗ Issues found in live review
+
+================================================================================
+FILES TO GENERATE TONIGHT
+================================================================================
+
+By EOD today:
+- reports/today_live_review.md (live performance)
+- exports/phase2_alert_ledger.csv (backtest ledger)
+- reports/phase2_vs_phase1_6.md (Phase 2 analysis)
+- reports/out_of_sample_phase2.md (other regimes)
+
+All inputs ready for decision tomorrow morning.
+
+================================================================================
+RESEARCH STATUS
+================================================================================
+
+Phase 1.6 Validation:
+✓ Framework complete
+✓ Live running today
+✓ Awaiting manual review
+
+Phase 2 Development:
+✓ All components built
+✓ Backtest ready
+✓ Awaiting replay results
+
+System Readiness:
+~~ 70% ready for Phase 2 trading
+~~ Waiting on today's validation + backtest
+
+Decision Timeline:
+- Today: Live observation
+- Tonight: Phase 2 backtest + out-of-sample
+- Tomorrow: Final review + go/no-go decision
+
+================================================================================
+REMEMBER
+================================================================================
+
+This is research, not trading.
+Every decision is manual and reviewed.
+Thresholds are locked (no mid-research optimization).
+Robustness across regimes is paramount.
+Phase 2 trading only if high confidence.
+
+Phase 1.6 is live today.
+Phase 2 is research.
+Phase 3 (trading) is tomorrow's decision.
+
+One phase at a time.
+Trust the process.
+
+================================================================================

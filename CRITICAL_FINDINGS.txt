@@ -1,0 +1,150 @@
+CRITICAL BUG FOUND — PHASE 2 BLOCKED
+================================================================================
+
+Date: 2026-05-06 07:23 PDT
+Status: TRADE PLAN BUG IDENTIFIED
+
+================================================================================
+SUMMARY
+================================================================================
+
+The "positive" Phase 1.5 backtest was MISLEADING.
+
+Previous results (53.1% WR, 1.26x PF) mask a fundamental strategy flaw:
+- LONG trades: 100% win rate (15/15)
+- SHORT trades: 11.8% win rate (2/17)
+
+This is NOT an entry timing problem.
+This IS a broken SHORT direction logic problem.
+
+================================================================================
+WHAT'S WORKING
+================================================================================
+
+✓ Trade plan construction (CLEAN)
+  - All 64 trades follow mandatory rules
+  - Stop/target placement is correct
+  - No code bugs in trade generation
+
+✓ Exit logic (CORRECT)
+  - Exit detection working as designed
+  - R-multiple calculations accurate
+  - Hit detection functioning properly
+
+✓ Entry timing optimization (WORKS)
+  - Phase 1.5 enters 0.51 ticks earlier
+  - Does improve LONG outcomes (+0.11R avg winner)
+
+================================================================================
+WHAT'S BROKEN
+================================================================================
+
+❌ SHORT direction signals (BROKEN)
+  - 88% of SHORT trades hit stop
+  - 2/17 shorts win = 11.8% win rate
+  - All fail the same way: market goes UP, short loses
+
+❌ Regime filter (MISSING)
+  - Strategy takes SHORT signals in bullish market (2026-05-05 was UP)
+  - No protection against trending against position
+  - Entering shorts in uptrend = losing strategy
+
+❌ Direction detection (UNRELIABLE)
+  - SHORT bias doesn't predict downside in uptrend
+  - Logic needs investigation
+  - Possible orderflow interpretation error
+
+================================================================================
+PROOF: DIRECTIONAL BIAS
+================================================================================
+
+Market Context (2026-05-05): BULLISH
+- ES rallying all session
+- All LONG targets hit
+- All SHORT stops hit
+
+LONG trades (15):
+  Direction: Bullish bias → LONG → WIN
+  Outcome: 15/15 TARGET1_HIT = +15.0R total
+  Win rate: 100%
+
+SHORT trades (17):
+  Direction: Bearish bias → SHORT → LOSS
+  Outcome: 15/17 STOP_HIT = -15.0R total
+  Win rate: 11.8%
+
+Net: +2.0R (looks positive but fragile)
+
+If market had been bearish:
+  - LONG trades would have all stopped out (-15.0R)
+  - SHORT trades might have worked
+  - Net would be -15.0R minimum
+
+Strategy's robustness is ZERO.
+
+================================================================================
+WHY EARLIER ENTRY (PHASE 1.5) DOESN'T FIX THIS
+================================================================================
+
+Phase 1.5 enters 0.51 ticks earlier.
+
+On LONG trades:
+  ✓ Works (enters even deeper into winning trade)
+  Result: +0.11R improvement
+
+On SHORT trades:
+  ✗ Makes it worse (enters deeper into losing setup)
+  Stops are still hit at same level
+  Earlier entry = longer hold time = same -1.0R loss
+
+Conclusion: Timing optimization cannot fix broken direction signals.
+
+================================================================================
+MANDATORY ACTIONS
+================================================================================
+
+PHASE 2 IS BLOCKED — DO NOT PROCEED
+
+Required before Phase 2:
+
+1. FIX SHORT DIRECTION LOGIC
+   - Investigate why shorts generate losing trades
+   - Check if orderflow interpretation is correct
+   - Validate trend detection
+
+2. ADD REGIME FILTER
+   - Reject shorts in uptrends
+   - Reject longs in downtrends
+
+3. RETEST ON DIFFERENT SESSION
+   - Use bearish or neutral market day
+   - Validate short win rate on proper bias
+
+4. REVALIDATE BOTH DIRECTIONS
+   - LONG must have >40% WR on its regime
+   - SHORT must have >40% WR on its regime
+   - Overall WR >50% with balanced distribution
+
+5. ONLY THEN: PHASE 2 LIVE
+
+================================================================================
+FILES GENERATED
+================================================================================
+
+✓ reports/trade_plan_integrity_audit.md
+  Full analysis of bug findings
+
+================================================================================
+NEXT ACTION
+================================================================================
+
+1. Stop all Phase 2 work
+2. Review SHORT signal generation logic
+3. Fix direction detection or add regime filter
+4. Regenerate clean ledger
+5. Re-backtest both directions
+6. Return verdict when SHORT win rate is fixed
+
+DO NOT PROCEED TO LIVE UNTIL SHORT WIN RATE IS FIXED.
+
+================================================================================
