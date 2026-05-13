@@ -1,0 +1,8 @@
+metric,config_a_baseline,config_b_fixed,change,pct_change,direction
+UPTREND,0,0,0,0.0,neutral
+DOWNTREND,0,0,0,0.0,neutral
+BALANCE,0,0,0,0.0,bad
+BREAKOUT,0,0,0,0.0,neutral
+BREAKDOWN,0,0,0,0.0,neutral
+HIGH_VOL,1375,1375,0,0.0,bad
+total_bars,1375,1375,0,0.0,neutral

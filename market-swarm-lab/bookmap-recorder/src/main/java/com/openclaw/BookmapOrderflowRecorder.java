@@ -28,11 +28,17 @@ public class BookmapOrderflowRecorder implements Layer1ApiDataAdapter, Layer1Api
 
     private static final String OUTPUT_DIR = "/Users/laxman_2026_mac_mini/.openclaw/workspace/market-swarm-lab/state/orderflow/bookmap_api";
     private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd").withZone(ZoneOffset.UTC);
+    
+    // NQ-ONLY FILTER
+    private static final String ALLOWED_SYMBOL = "NQM6";
 
     private final AtomicLong sequence = new AtomicLong(0);
     private BufferedWriter writer;
     private String currentDate;
     private Map<String, InstrumentInfo> instruments = new TreeMap<>();
+    
+    // Counters for diagnostics
+    private long rejectedESEvents = 0;
 
     public BookmapOrderflowRecorder(Layer1ApiProvider provider) throws IOException {
         Files.createDirectories(Paths.get(OUTPUT_DIR));
@@ -60,6 +66,17 @@ public class BookmapOrderflowRecorder implements Layer1ApiDataAdapter, Layer1Api
 
     private static String formatUtc(Instant instant) {
         return TS_FMT.format(instant);
+    }
+    
+    /**
+     * Filter check: only allow NQM6 symbol
+     */
+    private boolean shouldRecord(String symbol) {
+        boolean allowed = symbol.contains(ALLOWED_SYMBOL);
+        if (!allowed) {
+            rejectedESEvents++;
+        }
+        return allowed;
     }
 
     private synchronized void writeEvent(String type, String symbol, double price, int size,
@@ -100,10 +117,17 @@ public class BookmapOrderflowRecorder implements Layer1ApiDataAdapter, Layer1Api
 
     @Override
     public void onInstrumentAdded(String alias, InstrumentInfo instrumentInfo) {
+        // NQ-ONLY: Skip ES symbols
+        if (!shouldRecord(alias)) {
+            System.err.println("OrderflowRecorder: SKIPPED instrument (not NQ): " + alias);
+            return;
+        }
+        
         instruments.put(alias, instrumentInfo);
         try {
             writeEvent("instrument_added", alias, -1, -1, "unknown", -1, -1, -1, -1, -1,
                 "\"pips\":" + instrumentInfo.pips + ",\"exchange\":\"" + instrumentInfo.exchange + "\"", null);
+            System.out.println("OrderflowRecorder: Added NQ instrument: " + alias);
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -116,6 +140,11 @@ public class BookmapOrderflowRecorder implements Layer1ApiDataAdapter, Layer1Api
 
     @Override
     public void onDepth(String alias, boolean isBid, int price, int size) {
+        // NQ-ONLY: Filter ES events
+        if (!shouldRecord(alias)) {
+            return;
+        }
+        
         InstrumentInfo info = instruments.get(alias);
         if (info == null) return;
 
@@ -131,6 +160,11 @@ public class BookmapOrderflowRecorder implements Layer1ApiDataAdapter, Layer1Api
 
     @Override
     public void onTrade(String alias, double price, int size, TradeInfo tradeInfo) {
+        // NQ-ONLY: Filter ES events
+        if (!shouldRecord(alias)) {
+            return;
+        }
+        
         InstrumentInfo info = instruments.get(alias);
         if (info == null) return;
 
@@ -149,6 +183,7 @@ public class BookmapOrderflowRecorder implements Layer1ApiDataAdapter, Layer1Api
     public void finish() {
         try {
             if (writer != null) {
+                System.out.println("OrderflowRecorder: Closing. Rejected ES events: " + rejectedESEvents);
                 writer.close();
             }
         } catch (IOException e) {

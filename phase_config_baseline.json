@@ -1,0 +1,100 @@
+{
+  "replay_version": "1.0",
+  "date_created": "2026-05-11T19:01:00Z",
+  "dataset_file": "es_orderflow_2026-05-06.jsonl",
+  "dataset_events": 36267482,
+  "dataset_symbols": ["ESM6.CME@RITHMIC", "NQM6.CME@RITHMIC"],
+  "dataset_date": "2026-05-06",
+  "dataset_duration_hours": 19.27,
+  "configuration_status": "FROZEN",
+  "optimization_status": "NONE_PER_DAY",
+  "phase_1_6": {
+    "name": "Directional Regime Filter",
+    "status": "ACTIVE",
+    "regime_gating_enabled": true,
+    "long_accepted_regimes": [
+      "BULL_TREND",
+      "BULL_TRANSITION",
+      "BALANCE"
+    ],
+    "short_accepted_regimes": [
+      "BEAR_TREND",
+      "BEAR_TRANSITION",
+      "BALANCE"
+    ],
+    "early_transition_bonus": 0.05,
+    "description": "Gate entries to direction-aligned market regimes. Reduces whipsaw trades in counter-trend environments."
+  },
+  "phase_2": {
+    "name": "Trapped Trader & Early Exit Detection",
+    "status": "ACTIVE",
+    "trapped_trader_detection_enabled": true,
+    "failed_continuation_threshold": 0.3,
+    "failed_continuation_definition": "Stop hit if price reverts 30% of intended continuation distance",
+    "early_exit_signals_enabled": true,
+    "risk_score_floor": 0.25,
+    "risk_score_definition": "Phase 2 risk < 25% triggers EARLY_EXIT signal (shadow only, not live execution)",
+    "absorption_confidence_min": 0.6,
+    "description": "Detect weak continuation patterns. Identify when order flow absorption is insufficient. Surface early exit candidates for observation."
+  },
+  "phase_3_4_shadow": {
+    "name": "Auction Location & Continuation Shadow Evaluation",
+    "status": "SHADOW_ONLY",
+    "no_live_effect": true,
+    "no_threshold_tuning": true,
+    "location_quality_enabled": true,
+    "location_quality_threshold_warn": 0.55,
+    "location_quality_threshold_approve": 0.65,
+    "failed_continuation_detection_enabled": true,
+    "description": "Evaluate entry location quality and continuation strength. Record decisions for later offline review. NOT affecting live alerts."
+  },
+  "trade_engine": {
+    "tick_size_es": 0.25,
+    "tick_size_nq": 0.25,
+    "risk_per_trade_ticks": 16,
+    "risk_per_trade_dollars_es": 80,
+    "risk_per_trade_dollars_nq": 120,
+    "target_ratio_t1": 1.5,
+    "target_ratio_t2": 3.0,
+    "fill_model": "realistic_trade_events",
+    "price_alignment": "tick_aligned_only",
+    "description": "Fixed position sizing and profit targets. Fills simulated from actual trade events in order flow."
+  },
+  "constraints": {
+    "no_live_trading": true,
+    "no_auto_execution": true,
+    "no_synthetic_data": true,
+    "no_threshold_optimization_per_day": true,
+    "no_curve_fitting": true,
+    "use_one_fixed_config_across_all_sessions": true,
+    "robustness_testing_only": true
+  },
+  "validation_checks": [
+    "Anti-overfitting rules (no threshold tuning per day)",
+    "Regime dependency (works across BULL, BEAR, TRANSITION, BALANCE)",
+    "Symbol diversity (ES and NQ independent performance)",
+    "Direction balance (LONG vs SHORT win rates)",
+    "Time-of-day robustness (early, mid, late session)",
+    "Volatility regime robustness (high vol vs low vol)",
+    "Consecutive loss limits (max 3 in a row acceptable)",
+    "Drawdown limits (max -10R acceptable over full session)"
+  ],
+  "output_targets": [
+    "exports/global_alert_ledger.csv",
+    "exports/global_session_summary.csv",
+    "reports/replay_2026_05_06.md",
+    "reports/global_replay_validation.md",
+    "reports/phase2_global_analysis.md",
+    "reports/phase3_phase4_global_shadow_eval.md",
+    "reports/strategy_robustness_assessment.md"
+  ],
+  "verdict_candidates": [
+    "ROBUST_ACROSS_REGIMES - Works consistently across all market conditions",
+    "PROMISING_BUT_REGIME_DEPENDENT - Strong in trends, weak in balance",
+    "ONLY_WORKS_IN_TRENDS - Short leg broken, long only viable",
+    "OVERFIT_TO_FEW_DAYS - Edge seen in specific windows only",
+    "TOO_NOISY - High variance, unclear signal",
+    "NEGATIVE_EDGE - Losing strategy, stop work",
+    "INSUFFICIENT_DATA - Need more sessions to assess"
+  ]
+}

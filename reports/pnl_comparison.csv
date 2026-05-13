@@ -1,0 +1,9 @@
+metric,baseline_value,fixed_value,improvement,pct_improvement
+total_trades,1375,1375,0,0.0
+win_rate_pct,0.0,0.0,0.0,0.0
+balance_pct,0.0,0.0,0.0,0.0
+high_vol_pct,100.0,100.0,0.0,0.0
+breakout_pct,0.0,0.0,0.0,0.0
+breakdown_pct,0.0,0.0,0.0,0.0
+mean_volatility,0.256604,0.256604,0.0,0.0
+regime_transitions,0,0,0,0.0
