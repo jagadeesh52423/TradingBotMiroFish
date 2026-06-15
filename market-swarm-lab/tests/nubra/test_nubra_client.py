@@ -3,7 +3,8 @@ from services.nubra_client.nubra_client import NubraClient
 
 
 class _FakeTrader:
-    def __init__(self): self.last = None
+    def __init__(self):
+        self.last = None
 
     def create_order(self, payload):
         self.last = payload
@@ -47,6 +48,10 @@ def test_place_limit_buy_builds_paise_payload():
     assert payload["price_type"] == "LIMIT"
     assert payload["ref_id"] == 101
     assert payload["tag"] == "msl-1"
+    # S2: mandatory extra fields
+    assert payload["order_type"] == "ORDER_TYPE_REGULAR"
+    assert payload["exchange"] == "NSE"
+    assert payload["validity_type"] == "DAY"
 
 
 def test_place_rounds_to_tick_before_paise():
@@ -54,3 +59,11 @@ def test_place_rounds_to_tick_before_paise():
     client.place_order(symbol="SBIN", side="BUY", qty=1, price_type="LIMIT",
                        price=Decimal("812.53"), client_tag="msl-2")  # -> 812.55
     assert client._sdk_trader.last["order_price"] == 81255
+
+
+def test_place_market_omits_order_price():
+    client = _client()
+    client.place_order(symbol="SBIN", side="BUY", qty=1,
+                       price_type="MARKET", price=None, client_tag="msl-3")
+    # S3: order_price must be absent for MARKET orders (0 is a live-reject bug)
+    assert "order_price" not in client._sdk_trader.last

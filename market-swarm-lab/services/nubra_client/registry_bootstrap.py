@@ -1,15 +1,29 @@
-"""Register all broker modes into a BrokerRegistry instance.
+"""Build a BrokerRegistry with all known broker modes registered.
 
-To add a new broker mode: implement BrokerClient, then add one registry.register() call here.
+To add a new broker mode: implement BrokerClient, then add one reg.register() call here.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Callable
+
 from services.nubra_client.broker_registry import BrokerRegistry
 from services.nubra_client.equity_paper_trader import EquityPaperTrader
-from services.nubra_client.nubra_broker import NubraBroker
 
 
-def register_all(registry: BrokerRegistry) -> None:
-    registry.register("paper", lambda ltp_provider, **_: EquityPaperTrader(ltp_provider))
-    # live mode: caller must pass nubra_client= kwarg (a NubraClient instance)
-    registry.register("live", lambda nubra_client, **_: NubraBroker(nubra_client))
+def build_broker_registry(ltp_provider: Callable[[str], Decimal]) -> BrokerRegistry:
+    reg = BrokerRegistry()
+    reg.register("paper", lambda: EquityPaperTrader(ltp_provider=ltp_provider))
+    # nubra_uat / nubra_live: require a pre-built NubraBroker; guard at construction time
+    reg.register("nubra_uat", _require_nubra_broker)
+    reg.register("nubra_live", _require_nubra_broker)
+    return reg
+
+
+def _require_nubra_broker(nubra_broker=None):
+    if nubra_broker is None:
+        raise RuntimeError(
+            "nubra_* mode requires a constructed NubraBroker "
+            "(pass nubra_broker=...). Run nubra_login.py first."
+        )
+    return nubra_broker

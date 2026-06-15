@@ -1,56 +1,49 @@
+import pytest
 from decimal import Decimal
-from services.nubra_client.broker_types import BrokerOrder, BrokerOrderResult, OrderSide, OrderStatus, PriceType, Product, Validity
+from services.nubra_client.broker_types import (
+    BrokerOrder, OrderSide, Product, PriceType, Validity, OrderStatus)
 from services.nubra_client.nubra_broker import NubraBroker
 
 
 class _FakeNubraClient:
     def __init__(self):
-        self.placed = []
-        self.cancelled = []
+        self.placed = None
+        self.cancelled = None
 
-    def current_price(self, symbol: str) -> Decimal:
-        return Decimal("812.50")
+    def place_order(self, *, symbol, side, qty, price_type, price, client_tag):
+        self.placed = dict(symbol=symbol, side=side, qty=qty,
+                           price_type=price_type, price=price, client_tag=client_tag)
+        return {"order_id": "OID9", "payload": {"ref_id": 101, "order_price": 81250}}
 
-    def place_order(self, symbol, side, qty, price_type, price, client_tag) -> dict:
-        self.placed.append({
-            "symbol": symbol, "side": side, "qty": qty,
-            "price_type": price_type, "price": price, "tag": client_tag,
-        })
-        return {"order_id": f"NUBRA-{len(self.placed)}"}
-
-
-def _broker():
-    return NubraBroker(nubra_client=_FakeNubraClient())
+    def cancel_order(self, order_id):
+        self.cancelled = order_id
+        return {"cancelled": [order_id]}
 
 
-def test_place_order_returns_result_with_order_id():
-    broker = _broker()
-    order = BrokerOrder(symbol="SBIN", side=OrderSide.BUY, qty=5,
-                        price_type=PriceType.LIMIT, price=Decimal("812.50"),
-                        product=Product.CNC, validity=Validity.DAY,
-                        client_tag="msl-t1")
-    result = broker.place_order(order)
-    assert isinstance(result, BrokerOrderResult)
-    assert result.broker_order_id == "NUBRA-1"
-    assert result.status == OrderStatus.PENDING
+def _order():
+    return BrokerOrder(symbol="SBIN", side=OrderSide.BUY, qty=10,
+                       price_type=PriceType.LIMIT, price=Decimal("812.50"),
+                       product=Product.CNC, validity=Validity.DAY, client_tag="msl-1")
 
 
-def test_get_funds_delegates_to_ltp():
-    broker = _broker()
-    funds = broker.get_funds()
-    assert "live" in funds
+def test_place_maps_enums_to_strings_and_returns_result(capsys):
+    fake_client = _FakeNubraClient()
+    broker = NubraBroker(fake_client, dry_run_log=True)
+    res = broker.place_order(_order())
+    assert fake_client.placed["side"] == "BUY"
+    assert fake_client.placed["price_type"] == "LIMIT"
+    assert res.broker_order_id == "OID9"
+    assert res.status is OrderStatus.SENT
+    assert "ref_id" in capsys.readouterr().out  # dry-run payload logged
 
 
-def test_get_positions_returns_list():
-    broker = _broker()
-    positions = broker.get_positions()
-    assert isinstance(positions, list)
+def test_modify_not_implemented():
+    broker = NubraBroker(_FakeNubraClient())
+    with pytest.raises(NotImplementedError):
+        broker.modify_order("OID9", price=Decimal("1"))
 
 
-def test_cancel_order_raises_not_implemented():
-    broker = _broker()
-    try:
-        broker.cancel_order("X")
-        assert False, "Should have raised"
-    except NotImplementedError:
-        pass
+def test_cancel_delegates():
+    fake_client = _FakeNubraClient()
+    assert NubraBroker(fake_client).cancel_order("OID9") is True
+    assert fake_client.cancelled == "OID9"
