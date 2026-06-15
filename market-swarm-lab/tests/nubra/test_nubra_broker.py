@@ -19,6 +19,12 @@ class _FakeNubraClient:
         self.cancelled = order_id
         return {"cancelled": [order_id]}
 
+    def positions(self):
+        return [{"symbol": "SBIN", "net_quantity": 5}]
+
+    def get_order(self, order_id):
+        return type("O", (), {"order_status": "ORDER_STATUS_FILLED", "tag": "msl-1"})()
+
 
 def _order():
     return BrokerOrder(symbol="SBIN", side=OrderSide.BUY, qty=10,
@@ -47,3 +53,17 @@ def test_cancel_delegates():
     fake_client = _FakeNubraClient()
     assert NubraBroker(fake_client).cancel_order("OID9") is True
     assert fake_client.cancelled == "OID9"
+
+
+def test_get_positions_delegates():
+    broker = NubraBroker(_FakeNubraClient())
+    positions = broker.get_positions()
+    assert positions == [{"symbol": "SBIN", "net_quantity": 5}]
+
+
+def test_get_order_status_maps():
+    broker = NubraBroker(_FakeNubraClient())
+    result = broker.get_order_status("OID9")
+    assert result is not None
+    assert result.status is OrderStatus.FILLED
+    assert result.client_tag == "msl-1"

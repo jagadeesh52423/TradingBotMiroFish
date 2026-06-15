@@ -77,7 +77,7 @@
 1. **`NubraClient.from_session()`** — stub with `NotImplementedError`; production wiring documented in comments.
 2. **`nubra_login.py`** — full interactive login flow; production wiring documented in stub.
 3. **`nubra_uat_smoke.py`** — end-to-end smoke test; wiring documented in stub.
-4. **`NubraBroker.cancel_order()` / `get_order_status()` / `get_positions()`** — implemented as real delegations to `NubraClient.cancel_order()` / `get_order()` / `positions()`. Those NubraClient methods delegate to the injected `sdk_trader` handle. In production (after `from_session` is wired), these call the real SDK. Until then they require a live SDK handle.
+4. **`NubraClient.from_session()` SDK wiring** — `cancel_order()` / `get_order()` / `positions()` are fully implemented and unit-tested with injected fakes. The remaining deferred work is wiring the real `sdk_trader` handle via `NubraClient.from_session()` (requires live `nubra_python_sdk`). Once wired, all NubraBroker methods call the real SDK automatically — no further changes needed.
 
 ## Extension Contract
 
