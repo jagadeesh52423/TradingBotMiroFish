@@ -55,6 +55,10 @@ class OrderStateTracker:
         status = _STATUS_MAP.get(str(event.get("order_status")), OrderStatus.PENDING)
         self.mark(event.get("order_id"), status)
 
+    def was_placed(self, client_tag: str) -> bool:
+        """True if this client_tag was ever recorded (open or terminal)."""
+        return client_tag in self._data
+
     def has_open(self, client_tag: str) -> bool:
         rec = self._data.get(client_tag)
         if not rec:
