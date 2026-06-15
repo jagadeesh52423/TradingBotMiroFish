@@ -15,7 +15,15 @@ _ORDERS_DIR = _ROOT / "state" / "orders"
 
 
 class ExecutionEngineService:
+    def __init__(self, order_handler_registry=None):
+        self._order_handler_registry = order_handler_registry
+
     def execute(self, signal: dict, risk: dict, ticker: str) -> dict:
+        asset_class = signal.get("asset_class", "options")
+        if asset_class == "equity" and self._order_handler_registry is not None:
+            return self._order_handler_registry.dispatch(
+                asset_class, signal, risk, ticker)
+        # ----- existing options behavior unchanged below -----
         mode = EXECUTION_MODE
 
         if mode == "disabled":
