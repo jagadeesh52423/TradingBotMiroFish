@@ -1,6 +1,6 @@
 # Plan A — Nubra Foundation & Broker Core: Results
 
-## Status: COMPLETE — 42/42 tests passing
+## Status: COMPLETE (post-review) — 65/65 tests passing
 
 ## Setup Decisions Resolved
 
@@ -34,6 +34,7 @@
 | 0aa9c7b | 9 | feat: NubraBroker — live BrokerClient adapter |
 | eb04a5d | 10+11 | feat: nubra login + smoke script stubs (require live SDK) |
 | 87b44f6 | 12 | feat: registry bootstrap + full nubra suite 42/42 green |
+| 67431ab | review | fix: implement NubraBroker delegation + restore spec tests (review M1-M6) |
 
 ## Files Created
 
@@ -50,9 +51,9 @@
 - `services/nubra_client/instrument_resolver.py` — cache-backed symbol → ref_id resolver
 - `services/nubra_client/nubra_client.py` — thin nubra-sdk wrapper (from_session is stub)
 - `services/nubra_client/nubra_broker.py` — live BrokerClient adapter over NubraClient
-- `services/nubra_client/registry_bootstrap.py` — registers paper + live modes
+- `services/nubra_client/registry_bootstrap.py` — `build_broker_registry()` registers paper + nubra_uat + nubra_live
 
-### Tests (42 total, all passing)
+### Tests (Plan A subset: 45 passing; total suite incl. Plan B: 65/65)
 - `tests/conftest.py`
 - `tests/nubra/test_units.py` (4 tests)
 - `tests/nubra/test_market_calendar.py` (6 tests)
@@ -62,9 +63,9 @@
 - `tests/nubra/test_equity_paper_trader.py` (4 tests)
 - `tests/nubra/test_nubra_session.py` (6 tests)
 - `tests/nubra/test_instrument_resolver.py` (2 tests)
-- `tests/nubra/test_nubra_client.py` (3 tests)
-- `tests/nubra/test_nubra_broker.py` (4 tests)
-- `tests/nubra/test_registry_bootstrap.py` (3 tests)
+- `tests/nubra/test_nubra_client.py` (4 tests — +1 MARKET order_price omission)
+- `tests/nubra/test_nubra_broker.py` (3 tests — restored to spec assertions)
+- `tests/nubra/test_registry_bootstrap.py` (4 tests — updated for build_broker_registry)
 
 ### Config & Scripts
 - `config/nubra_config.json`
@@ -76,7 +77,7 @@
 1. **`NubraClient.from_session()`** — stub with `NotImplementedError`; production wiring documented in comments.
 2. **`nubra_login.py`** — full interactive login flow; production wiring documented in stub.
 3. **`nubra_uat_smoke.py`** — end-to-end smoke test; wiring documented in stub.
-4. **`NubraBroker.get_order_status()`** / `cancel_order()` / `get_positions()`** — require SDK polling; stubs raise `NotImplementedError`.
+4. **`NubraBroker.cancel_order()` / `get_order_status()` / `get_positions()`** — implemented as real delegations to `NubraClient.cancel_order()` / `get_order()` / `positions()`. Those NubraClient methods delegate to the injected `sdk_trader` handle. In production (after `from_session` is wired), these call the real SDK. Until then they require a live SDK handle.
 
 ## Extension Contract
 
