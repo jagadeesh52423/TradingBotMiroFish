@@ -1,0 +1,13 @@
+{
+  "env": "UAT",
+  "whitelist": ["SBIN", "RELIANCE", "TATAMOTORS"],
+  "exchange": "NSE",
+  "product": "CNC",
+  "default_order_type": "LIMIT",
+  "validity": "DAY",
+  "limit_offset_pct": 0.0,
+  "risk_per_trade_pct": 0.5,
+  "max_trades_per_day": 3,
+  "session_file_dir": "~",
+  "instrument_cache_ttl_hours": 12
+}
