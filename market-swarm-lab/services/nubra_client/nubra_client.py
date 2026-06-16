@@ -23,13 +23,13 @@ class NubraClient:
                                             exchange=config.get("exchange", "NSE"))
 
     @classmethod
-    def from_session(cls, config: dict, session_token: str | None) -> "NubraClient":
+    def from_session(cls, config: dict) -> "NubraClient":
+        """Create a live client. Auth comes from the SDK shelve (run nubra_login.py first)."""
         from nubra_python_sdk.start_sdk import InitNubraSdk, NubraEnv
         from nubra_python_sdk.trading.trading_data import NubraTrader
         from nubra_python_sdk.marketdata.market_data import MarketData
         from nubra_python_sdk.portfolio.portfolio_data import NubraPortfolio
         from nubra_python_sdk.refdata.instruments import InstrumentData
-        # session_token accepted for interface compat; SDK manages its own session via shelve.
         env = NubraEnv.UAT if config.get("env", "UAT") == "UAT" else NubraEnv.PROD
         nubra = InitNubraSdk(env=env, env_creds=True)
         return cls(
