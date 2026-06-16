@@ -1,0 +1,24 @@
+[
+  {
+    "an_dt": "11-Jun-2026 16:30:00",
+    "sort_date": "2026-06-11 16:30:00",
+    "symbol": "TATACONSUM",
+    "desc": "Financial Results",
+    "attchmntText": "Tata Consumer Products Limited announces quarterly earnings with profit growth and higher revenue from premium segment expansion.",
+    "attchmntFile": "https://nsearchives.nseindia.com/corporate/attachments/TATACONSUM_11062026.pdf",
+    "smIndustry": "Consumer Food",
+    "sm_name": "Tata Consumer Products Limited",
+    "sm_isin": "INE192A01025"
+  },
+  {
+    "an_dt": "08-Jun-2026 10:00:00",
+    "sort_date": "2026-06-08 10:00:00",
+    "symbol": "TATACONSUM",
+    "desc": "Penalty Notice",
+    "attchmntText": "Tata Consumer Products received penalty notice related to a regulatory investigation into pricing practices.",
+    "attchmntFile": "https://nsearchives.nseindia.com/corporate/attachments/TATACONSUM_08062026.pdf",
+    "smIndustry": "Consumer Food",
+    "sm_name": "Tata Consumer Products Limited",
+    "sm_isin": "INE192A01025"
+  }
+]

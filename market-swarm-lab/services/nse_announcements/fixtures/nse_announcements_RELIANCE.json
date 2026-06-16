@@ -1,0 +1,24 @@
+[
+  {
+    "an_dt": "11-Jun-2026 14:15:00",
+    "sort_date": "2026-06-11 14:15:00",
+    "symbol": "RELIANCE",
+    "desc": "Acquisition",
+    "attchmntText": "Reliance Industries Limited has announced a strategic acquisition to fuel expansion into renewable energy and growth in new geographies.",
+    "attchmntFile": "https://nsearchives.nseindia.com/corporate/attachments/RELIANCE_11062026.pdf",
+    "smIndustry": "Refineries",
+    "sm_name": "Reliance Industries Limited",
+    "sm_isin": "INE002A01018"
+  },
+  {
+    "an_dt": "09-Jun-2026 09:45:00",
+    "sort_date": "2026-06-09 09:45:00",
+    "symbol": "RELIANCE",
+    "desc": "Order Win",
+    "attchmntText": "Reliance Jio wins major 5G infrastructure order from government. Company expects significant revenue growth.",
+    "attchmntFile": "https://nsearchives.nseindia.com/corporate/attachments/RELIANCE_09062026.pdf",
+    "smIndustry": "Refineries",
+    "sm_name": "Reliance Industries Limited",
+    "sm_isin": "INE002A01018"
+  }
+]

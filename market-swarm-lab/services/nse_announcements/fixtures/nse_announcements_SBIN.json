@@ -1,0 +1,24 @@
+[
+  {
+    "an_dt": "12-Jun-2026 19:36:11",
+    "sort_date": "2026-06-12 19:36:11",
+    "symbol": "SBIN",
+    "desc": "General Updates",
+    "attchmntText": "State Bank of India has informed the Exchange about details of Director changes. The board approved dividend for shareholders.",
+    "attchmntFile": "https://nsearchives.nseindia.com/corporate/attachments/SBIN_12062026.pdf",
+    "smIndustry": "Banks",
+    "sm_name": "State Bank of India",
+    "sm_isin": "INE062A01012"
+  },
+  {
+    "an_dt": "10-Jun-2026 11:20:00",
+    "sort_date": "2026-06-10 11:20:00",
+    "symbol": "SBIN",
+    "desc": "Press Release",
+    "attchmntText": "State Bank of India reports strong quarterly profit growth beating analyst estimates. Record earnings for FY2026.",
+    "attchmntFile": "https://nsearchives.nseindia.com/corporate/attachments/SBIN_10062026.pdf",
+    "smIndustry": "Banks",
+    "sm_name": "State Bank of India",
+    "sm_isin": "INE062A01012"
+  }
+]
