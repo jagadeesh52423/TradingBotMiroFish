@@ -6,6 +6,12 @@ from services.nubra_client.broker_types import OrderStatus
 _TERMINAL = {OrderStatus.FILLED, OrderStatus.REJECTED,
              OrderStatus.CANCELLED, OrderStatus.EXPIRED}
 
+# Statuses that prevent re-entry: live orders and filled (position held).
+_BLOCKING = {
+    OrderStatus.PENDING, OrderStatus.SENT, OrderStatus.OPEN,
+    OrderStatus.PARTIAL_FILLED, OrderStatus.FILLED,
+}
+
 _STATUS_MAP = {
     "ORDER_STATUS_PENDING": OrderStatus.PENDING,
     "ORDER_STATUS_SENT": OrderStatus.SENT,
@@ -64,3 +70,11 @@ class OrderStateTracker:
         if not rec:
             return False
         return OrderStatus(rec["status"]) not in _TERMINAL
+
+    def is_blocking(self, client_tag: str) -> bool:
+        """True when a live or filled order exists — prevents re-entry.
+        False for rejected/cancelled/expired so the signal can retry."""
+        rec = self._data.get(client_tag)
+        if not rec:
+            return False
+        return OrderStatus(rec["status"]) in _BLOCKING

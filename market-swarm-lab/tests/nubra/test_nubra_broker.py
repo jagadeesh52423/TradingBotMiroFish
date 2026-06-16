@@ -22,6 +22,9 @@ class _FakeNubraClient:
     def positions(self):
         return [{"symbol": "SBIN", "net_quantity": 5}]
 
+    def funds(self):
+        return {"net_margin_available": 500000}  # paise
+
     def get_order(self, order_id):
         return type("O", (), {"order_status": "ORDER_STATUS_FILLED", "tag": "msl-1"})()
 
@@ -67,3 +70,9 @@ def test_get_order_status_maps():
     assert result is not None
     assert result.status is OrderStatus.FILLED
     assert result.client_tag == "msl-1"
+
+
+def test_get_funds_returns_net_margin_available():
+    broker = NubraBroker(_FakeNubraClient())
+    funds = broker.get_funds()
+    assert funds == {"net_margin_available": 500000}

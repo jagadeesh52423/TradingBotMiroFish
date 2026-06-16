@@ -56,7 +56,7 @@ class EquityOrderHandler(OrderHandler):
         if order is None:
             return {"asset_class": "equity", "status": "skipped", "reason": reason}
 
-        if self._tracker.was_placed(order.client_tag):
+        if self._tracker.is_blocking(order.client_tag):
             return {"asset_class": "equity", "status": "duplicate_skipped",
                     "client_tag": order.client_tag}
 

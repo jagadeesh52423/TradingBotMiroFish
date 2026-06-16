@@ -73,4 +73,4 @@ class NubraBroker(BrokerClient):
         return list(self._c.positions())
 
     def get_funds(self) -> dict:
-        return {}  # wired in Plan B PositionSync
+        return self._c.funds()
