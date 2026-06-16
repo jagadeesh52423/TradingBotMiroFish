@@ -36,6 +36,7 @@ class EquityStack:
     broker: object                   # BrokerClient (paper or live)
     feed: NubraFeedAdapter | None    # None in paper mode
     registry: OrderHandlerRegistry   # pre-wired registry; pass to ExecutionEngineService
+    market_data: object | None       # NubraClient (current_price + historical); None in paper mode
 
 
 def build_equity_stack(
@@ -66,9 +67,9 @@ def build_equity_stack(
     tracker = OrderStateTracker(env=env, base_dir=state_dir)
 
     if mode == "paper":
-        broker, feed, effective_ltp, funds_check = _paper_components(ltp_provider)
+        broker, feed, effective_ltp, funds_check, market_data = _paper_components(ltp_provider)
     elif mode == "nubra_uat":
-        broker, feed, effective_ltp, funds_check = _nubra_uat_components(
+        broker, feed, effective_ltp, funds_check, market_data = _nubra_uat_components(
             config, whitelist, client_factory=client_factory
         )
     else:
@@ -97,14 +98,14 @@ def build_equity_stack(
     registry.register(handler)
 
     return EquityStack(handler=handler, translator=translator, broker=broker, feed=feed,
-                       registry=registry)
+                       registry=registry, market_data=market_data)
 
 
 def _paper_components(ltp_override: Callable | None):
     from services.nubra_client.equity_paper_trader import EquityPaperTrader
     ltp = ltp_override or (lambda sym: Decimal("1000"))
     broker = EquityPaperTrader(ltp_provider=ltp)
-    return broker, None, ltp, lambda order: True
+    return broker, None, ltp, lambda order: True, None  # no live market-data client in paper mode
 
 
 def _nubra_uat_components(config: dict, whitelist: list[str], *, client_factory: Callable | None):
@@ -116,7 +117,8 @@ def _nubra_uat_components(config: dict, whitelist: list[str], *, client_factory:
     broker = NubraBroker(nubra_client)
     feed = NubraFeedAdapter(nubra_client, symbols=whitelist)
     funds_check = PositionSync(broker).funds_sufficient
-    return broker, feed, nubra_client.current_price, funds_check
+    # market_data = the raw NubraClient, NOT the broker — broker lacks current_price/historical.
+    return broker, feed, nubra_client.current_price, funds_check, nubra_client
 
 
 def _account_from_funds(broker, mode: str) -> Decimal:

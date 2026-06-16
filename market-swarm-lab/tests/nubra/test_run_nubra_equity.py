@@ -23,8 +23,9 @@ for _svc in ("mirofish-bridge", "risk-engine"):
 from mirofish_bridge_service import MiroFishBridgeService
 from risk_engine_service import RiskEngineService
 
-from scripts.run_nubra_equity import NubraEquityRunner, _chunk, _load_config
+from scripts.run_nubra_equity import NubraEquityRunner, _build_risk_audit, _chunk, _load_config
 from services.nubra_client.entry_gate import ExpectedUpsideGate
+from services.nubra_client.equity_assembly import build_equity_stack
 
 
 # ---------------------------------------------------------------------------
@@ -339,7 +340,6 @@ class TestTradeCapEnforcement:
 class TestRiskRejection:
     def test_low_confidence_forecast_rejected(self):
         low_conf_fc = {**_BULLISH_FORECAST, "confidence": 0.40}
-        result, _ = _make_runner(forecast=low_conf_fc)[0], None
         runner, _ = _make_runner(forecast=low_conf_fc)
         result = runner._process_symbol("SBIN", dry_run=True)
         assert result["status"] == "skipped"
@@ -365,3 +365,208 @@ class TestEntryGate:
         runner, _ = _make_runner(forecast=_BULLISH_FORECAST)
         result = runner._process_symbol("SBIN", dry_run=True)
         assert result["entry_gate"]["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Wiring regression: market_data must be NubraClient, not NubraBroker
+# ---------------------------------------------------------------------------
+
+class TestWiringRegression:
+    """Regression for the broker→NubraClient wiring bug.
+
+    The runner must receive the NubraClient (has current_price + historical),
+    not the NubraBroker (which lacks those methods).  These tests prove:
+    (a) EquityStack.market_data holds the NubraClient object injected by the factory.
+    (b) Passing a spec-limited NubraBroker fake (without current_price/historical)
+        as nubra_client would raise AttributeError — i.e. the old broken wiring
+        is detectable offline.
+    """
+
+    def test_stack_market_data_is_the_client_returned_by_factory(self):
+        """build_equity_stack("nubra_uat", client_factory=...) must expose the
+        NubraClient via stack.market_data, NOT the broker."""
+
+        class _FakeFundsClient:
+            """Minimal NubraClient-like object for build_equity_stack in nubra_uat mode."""
+            def current_price(self, symbol):
+                return __import__("decimal").Decimal("500.00")
+
+            def historical(self, symbol, interval="1d", lookback=20):
+                return [{"close": 500.0 + i, "timestamp": i * 86400} for i in range(lookback)]
+
+            def funds(self):
+                # NubraBroker.get_funds() delegates to client.funds()
+                return {"net_margin_available": 1_000_000}  # 1 lakh in paise
+
+            def place_order(self, **kwargs):
+                return {"order_id": "fake-001"}
+
+            def get_positions(self):
+                return []
+
+            def get_order_status(self, order_id):
+                return {"status": "COMPLETE"}
+
+        fake_client = _FakeFundsClient()
+        stack = build_equity_stack("nubra_uat", _CFG, client_factory=lambda cfg: fake_client)
+
+        # market_data must be the raw NubraClient (which has current_price + historical)
+        assert stack.market_data is fake_client
+        # Verify the interface is present on the object exposed to the runner
+        assert hasattr(stack.market_data, "current_price")
+        assert hasattr(stack.market_data, "historical")
+
+    def test_spec_limited_broker_fake_lacks_current_price(self):
+        """A spec-limited NubraBroker fake (no current_price/historical) must raise
+        AttributeError when the runner tries to call current_price — proving the
+        old wiring (passing broker as nubra_client) would have been caught offline."""
+        from services.nubra_client.nubra_broker import NubraBroker
+
+        # NubraBroker does NOT expose current_price or historical — confirmed spec
+        broker_fake = MagicMock(spec=NubraBroker)
+        assert not hasattr(broker_fake, "current_price"), (
+            "NubraBroker gained current_price — update runner to use that instead"
+        )
+        assert not hasattr(broker_fake, "historical"), (
+            "NubraBroker gained historical — update runner to use that instead"
+        )
+        # Calling current_price on a spec-limited mock must raise AttributeError
+        with pytest.raises(AttributeError):
+            broker_fake.current_price("SBIN")
+
+
+# ---------------------------------------------------------------------------
+# _build_risk_audit — B3: correct key mapping for RiskEngine Rule 2 + Rule 3
+# ---------------------------------------------------------------------------
+
+class TestBuildRiskAudit:
+    """Tests for _build_risk_audit() — ensures NSE maps to "news" (Rule 3) and
+    OHLCV quality maps to "ohlcv" (Rule 2) so RiskEngine guards actually fire."""
+
+    def _equity_audit(self):
+        # Typical equity_context source_audit: US sources are string "n/a"
+        return {
+            "alpha_vantage": "n/a",
+            "yfinance": "n/a",
+            "some_dict_source": {"status": "live", "count": 5},
+        }
+
+    # ── NSE → "news" (Rule 3) ───────────────────────────────────────────────
+
+    def test_nse_live_maps_to_news_status_live(self):
+        nse = {"provider_mode": "nse_live"}
+        result = _build_risk_audit(self._equity_audit(), nse, closes=[1.0, 2.0, 3.0])
+        assert result["news"] == {"status": "live"}
+
+    def test_nse_fallback_maps_to_news_status_fallback(self):
+        nse = {"provider_mode": "fixture_fallback"}
+        result = _build_risk_audit(self._equity_audit(), nse, closes=[1.0, 2.0])
+        assert result["news"] == {"status": "fallback"}
+
+    def test_nse_unknown_mode_maps_to_news_status_fallback(self):
+        nse = {"provider_mode": "unknown_mode"}
+        result = _build_risk_audit(self._equity_audit(), nse, closes=[1.0, 2.0])
+        assert result["news"] == {"status": "fallback"}
+
+    def test_nse_missing_provider_mode_defaults_to_fallback(self):
+        nse = {}
+        result = _build_risk_audit(self._equity_audit(), nse, closes=[1.0, 2.0])
+        assert result["news"] == {"status": "fallback"}
+
+    # ── OHLCV → "ohlcv" (Rule 2) ───────────────────────────────────────────
+
+    def test_single_close_maps_to_ohlcv_fallback(self):
+        # len(closes) == 1 means only LTP available → Rule 2 must reject
+        nse = {"provider_mode": "nse_live"}
+        result = _build_risk_audit(self._equity_audit(), nse, closes=[812.50])
+        assert result["ohlcv"] == {"status": "fallback"}
+
+    def test_empty_closes_maps_to_ohlcv_fallback(self):
+        nse = {"provider_mode": "nse_live"}
+        result = _build_risk_audit(self._equity_audit(), nse, closes=[])
+        assert result["ohlcv"] == {"status": "fallback"}
+
+    def test_multiple_closes_maps_to_ohlcv_live(self):
+        nse = {"provider_mode": "nse_live"}
+        result = _build_risk_audit(self._equity_audit(), nse, closes=[810.0 + i for i in range(20)])
+        assert result["ohlcv"] == {"status": "live"}
+
+    # ── String "n/a" entries stripped ───────────────────────────────────────
+
+    def test_string_equity_audit_entries_stripped(self):
+        # Equity context has "n/a" strings for US sources — must not appear in risk context
+        audit = {"alpha_vantage": "n/a", "yfinance": "ok"}
+        nse = {"provider_mode": "nse_live"}
+        result = _build_risk_audit(audit, nse, closes=[1.0, 2.0])
+        assert "alpha_vantage" not in result
+        assert "yfinance" not in result
+
+    def test_dict_equity_audit_entries_preserved(self):
+        audit = {"some_source": {"status": "live", "count": 3}}
+        nse = {"provider_mode": "nse_live"}
+        result = _build_risk_audit(audit, nse, closes=[1.0, 2.0])
+        assert result["some_source"] == {"status": "live", "count": 3}
+
+    # ── Integration: Rule 2 fires on single close (rejected) ────────────────
+
+    def test_rule2_fires_when_only_ltp_available(self):
+        """With only 1 close (LTP-only), risk_audit["ohlcv"].status=fallback
+        → RiskEngineService Rule 2 must reject the signal."""
+        from risk_engine_service import RiskEngineService
+
+        risk = RiskEngineService()
+        signal = {
+            "trade": "CALL",
+            "strategy_type": "trend",
+            "confidence": 0.85,
+            "asset_class": "equity",
+            "ticker": "SBIN",
+        }
+        # Single close → ohlcv fallback
+        nse = {"provider_mode": "nse_live"}
+        source_audit = _build_risk_audit({}, nse, closes=[812.50])
+        context = {"source_audit": source_audit}
+
+        result = risk.evaluate(signal, context)
+        assert result["approved"] is False, (
+            "Rule 2 should reject when ohlcv.status=fallback (only LTP available)"
+        )
+
+    # ── Integration: Rule 3 fires on NSE fallback (confidence reduced) ──────
+
+    def test_rule3_reduces_confidence_on_nse_fallback(self):
+        """When NSE provider_mode is fixture_fallback, risk_audit["news"].status=fallback
+        → RiskEngineService Rule 3 must reduce the adjusted confidence by 0.05."""
+        from risk_engine_service import RiskEngineService
+
+        risk = RiskEngineService()
+        signal = {
+            "trade": "CALL",
+            "strategy_type": "trend",
+            "confidence": 0.70,
+            "asset_class": "equity",
+            "ticker": "SBIN",
+        }
+        # NSE fallback, full OHLCV history (no Rule 2)
+        nse_fallback = {"provider_mode": "fixture_fallback"}
+        source_audit_fallback = _build_risk_audit({}, nse_fallback, closes=[800.0 + i for i in range(20)])
+        context_fallback = {"source_audit": source_audit_fallback}
+
+        nse_live = {"provider_mode": "nse_live"}
+        source_audit_live = _build_risk_audit({}, nse_live, closes=[800.0 + i for i in range(20)])
+        context_live = {"source_audit": source_audit_live}
+
+        result_fallback = risk.evaluate(signal, context_fallback)
+        result_live = risk.evaluate(signal, context_live)
+
+        # Rule 3 note must appear in the fallback result
+        fallback_notes = " ".join(result_fallback.get("risk_notes", []))
+        assert "news" in fallback_notes.lower() or "fallback" in fallback_notes.lower(), (
+            f"Expected Rule 3 note about news fallback, got: {result_fallback.get('risk_notes')}"
+        )
+        # Adjusted confidence must be lower with NSE fallback
+        adj_fallback = result_fallback.get("adjusted_confidence", signal["confidence"])
+        adj_live = result_live.get("adjusted_confidence", signal["confidence"])
+        assert adj_fallback < adj_live, (
+            f"Rule 3 must reduce confidence on NSE fallback: {adj_fallback} vs {adj_live}"
+        )

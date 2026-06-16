@@ -201,13 +201,11 @@ class NubraEquityRunner:
                 "skip_reason": "HOLD",
             }
 
-        # RiskEngineService expects source_audit values as dicts (e.g. {"status": "live"}).
-        # equity_context_builder marks US sources as the string "n/a" which is incompatible.
-        # Build a risk-adapted context: strip n/a string entries so the engine's .get() calls
-        # receive either a proper dict or nothing (defaults to {}).
+        # Build risk-engine-compatible source_audit: maps NSE→"news" (Rule 3) and
+        # OHLCV quality→"ohlcv" (Rule 2); strips equity context's string "n/a" entries.
         risk_context = {
             **context,
-            "source_audit": _build_risk_audit(context["source_audit"], nse_result),
+            "source_audit": _build_risk_audit(context["source_audit"], nse_result, closes),
         }
         risk_result = self._risk.evaluate(signal, risk_context)
         gate_ok, gate_reason = self._entry_gate.evaluate(signal)
@@ -243,22 +241,29 @@ class NubraEquityRunner:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _build_risk_audit(equity_audit: dict, nse_result: dict) -> dict:
-    """Convert equity context's flat source_audit to the dict format RiskEngineService expects.
+def _build_risk_audit(equity_audit: dict, nse_result: dict, closes: list) -> dict:
+    """Build a RiskEngineService-compatible source_audit from equity context + NSE result.
 
-    equity_context_builder marks US-only sources (reddit, news, …) as the string "n/a".
-    RiskEngineService does source_audit.get("news") or {} and then calls .get() on the result,
-    which crashes when the value is a string. We strip those out and inject the NSE audit entry.
+    Maps data-source quality to the exact keys RiskEngine reads:
+      "news"  — Rule 3: fallback → reduce confidence by 0.05
+      "ohlcv" — Rule 2: fallback → reject (only LTP available, no history)
+
+    Strips equity context's string "n/a" entries (US sources) which would crash
+    RiskEngine's .get("status") calls.
     """
     risk_audit: dict = {}
     for key, val in equity_audit.items():
         if isinstance(val, dict):
             risk_audit[key] = val
-        # string "n/a" / "ok" entries are equity-context shorthand — omit them from risk context
-    # Merge NSE announcements audit so Rule 3 (news fallback → confidence reduction) fires correctly.
-    nse_sub_audit = nse_result.get("source_audit", {})
-    if nse_sub_audit:
-        risk_audit.update(nse_sub_audit)
+        # string "n/a"/"ok" are equity-context shorthand — omit from risk context
+
+    # Rule 3 — news quality derived from NSE provider_mode
+    nse_mode = nse_result.get("provider_mode", "fixture_fallback")
+    risk_audit["news"] = {"status": "live" if nse_mode == "nse_live" else "fallback"}
+
+    # Rule 2 — OHLCV quality: degraded when only LTP was available (≤1 close)
+    risk_audit["ohlcv"] = {"status": "fallback" if len(closes) <= 1 else "live"}
+
     return risk_audit
 
 
@@ -299,7 +304,7 @@ def main(argv=None) -> None:
     stack = build_equity_stack("nubra_uat", config)
     runner = NubraEquityRunner(
         config,
-        nubra_client=stack.broker,  # NubraBroker exposes current_price + historical via client
+        nubra_client=stack.market_data,  # NubraClient (current_price + historical), NOT the broker
         equity_stack=stack,
     )
 
