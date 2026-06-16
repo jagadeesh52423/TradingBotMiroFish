@@ -9,6 +9,10 @@ __pycache__/
 .env
 *.env
 
+# Nubra SDK session store (shelve token cache — never commit)
+auth_data.db
+auth_data.db.*
+
 # State & artifacts
 state/reports/*.json
 state/reports/*.md
