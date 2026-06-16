@@ -27,11 +27,14 @@
     "max_horizon_days": null
   },
   "signal": {
-    "tf_weight": 0.6,
-    "sim_weight": 0.4,
-    "tf_weight_with_nse": 0.5,
-    "sim_weight_with_nse": 0.3,
-    "nse_weight": 0.2,
+    "confidence_weights": {
+      "no_nse": {"tf": 0.6, "sim": 0.4},
+      "with_nse": {"tf": 0.5, "sim": 0.3, "nse": 0.2}
+    },
+    "news_override": {
+      "neg_threshold": -0.3,
+      "weak_confidence": 0.55
+    },
     "min_confidence_threshold": 0.60
   },
   "nse": {

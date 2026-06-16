@@ -178,8 +178,10 @@ class TestConfigLoading:
         cfg = _load_config()
         assert "signal" in cfg
         signal = cfg["signal"]
-        assert "tf_weight" in signal
-        assert "nse_weight" in signal
+        assert "confidence_weights" in signal
+        cw = signal["confidence_weights"]
+        assert "no_nse" in cw and "with_nse" in cw
+        assert "news_override" in signal
 
     def test_config_has_nse_block(self):
         cfg = _load_config()

@@ -187,21 +187,20 @@ class TestSentimentScoring:
         assert result["sentiment_score"] < -0.1
 
     def test_sentiment_label_neutral_for_zero_score(self):
-        # No keywords at all
+        # No keywords at all → score=0.0 → neither > 0.1 nor < -0.1 → "neutral"
         items = [{"attchmntText": "Board meeting details of director appointment."}]
         sess = _fake_session(items)
         collector = NseAnnouncementsCollector(session=sess)
         result = collector.collect("SBIN")
-        # Exact label depends on score; just ensure score is within neutral band
-        assert result["sentiment_label"] in ("neutral", "bullish", "bearish")
+        assert result["sentiment_label"] == "neutral"
 
     def test_tataconsum_fixture_has_mixed_sentiment(self):
-        """TATACONSUM fixture has both bullish (earnings) and bearish (penalty) items."""
+        """TATACONSUM fixture: item 0 has earnings/profit/growth/expansion (+0.4),
+        item 1 has penalty/investigation (-0.2); net = +0.2."""
         items = _fixture_items("TATACONSUM")
         score = _score_sentiment(items)
-        # Should be somewhere in [-1, 1] — not assigning exact direction since
-        # both keywords present; just assert score is in bounds and plausibly mixed.
-        assert -1.0 <= score <= 1.0
+        assert score == pytest.approx(0.2, abs=1e-4)
+        assert score > 0, "bullish keywords must outweigh bearish in this fixture"
 
 
 # ---------------------------------------------------------------------------

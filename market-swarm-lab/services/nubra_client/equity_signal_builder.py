@@ -17,12 +17,12 @@ _DIRECTION_TO_TRADE: dict[str, str] = {
     "neutral": "HOLD",
 }
 
-_DEFAULTS: dict[str, float] = {
-    "tf_weight": 0.6,
-    "sim_weight": 0.4,
-    "tf_weight_with_nse": 0.5,
-    "sim_weight_with_nse": 0.3,
-    "nse_weight": 0.2,
+# Defaults used when no config is supplied — mirrored from config/nubra_config.json.
+# Export these so tests can derive expected values without hardcoding numerics.
+_DEFAULTS: dict = {
+    "no_nse": {"tf": 0.6, "sim": 0.4},
+    "with_nse": {"tf": 0.5, "sim": 0.3, "nse": 0.2},
+    "news_override": {"neg_threshold": -0.3, "weak_confidence": 0.55},
 }
 
 
@@ -36,11 +36,21 @@ class EquitySignalBuilder:
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
-        self._tf_w = float(cfg.get("tf_weight", _DEFAULTS["tf_weight"]))
-        self._sim_w = float(cfg.get("sim_weight", _DEFAULTS["sim_weight"]))
-        self._tf_w_nse = float(cfg.get("tf_weight_with_nse", _DEFAULTS["tf_weight_with_nse"]))
-        self._sim_w_nse = float(cfg.get("sim_weight_with_nse", _DEFAULTS["sim_weight_with_nse"]))
-        self._nse_w = float(cfg.get("nse_weight", _DEFAULTS["nse_weight"]))
+        cw_no_nse = cfg.get("confidence_weights", {}).get("no_nse", _DEFAULTS["no_nse"])
+        cw_with_nse = cfg.get("confidence_weights", {}).get("with_nse", _DEFAULTS["with_nse"])
+        self._tf_w = float(cw_no_nse.get("tf", _DEFAULTS["no_nse"]["tf"]))
+        self._sim_w = float(cw_no_nse.get("sim", _DEFAULTS["no_nse"]["sim"]))
+        self._tf_w_nse = float(cw_with_nse.get("tf", _DEFAULTS["with_nse"]["tf"]))
+        self._sim_w_nse = float(cw_with_nse.get("sim", _DEFAULTS["with_nse"]["sim"]))
+        self._nse_w = float(cw_with_nse.get("nse", _DEFAULTS["with_nse"]["nse"]))
+
+        news_ov = cfg.get("news_override", _DEFAULTS["news_override"])
+        self._news_neg_threshold = float(
+            news_ov.get("neg_threshold", _DEFAULTS["news_override"]["neg_threshold"])
+        )
+        self._news_weak_confidence = float(
+            news_ov.get("weak_confidence", _DEFAULTS["news_override"]["weak_confidence"])
+        )
 
     def build(
         self,
@@ -52,6 +62,17 @@ class EquitySignalBuilder:
     ) -> dict:
         trade = _DIRECTION_TO_TRADE[forecast["direction"]]
         confidence = self._blend_confidence(forecast, simulation, nse_result)
+
+        # F2: strong bearish NSE news + weak forecast confidence → suppress CALL to HOLD.
+        # Prevents chasing a momentum signal when fundamentals are against it.
+        if (
+            trade == "CALL"
+            and nse_result is not None
+            and float(nse_result.get("sentiment_score", 0.0)) < self._news_neg_threshold
+            and float(forecast["confidence"]) < self._news_weak_confidence
+        ):
+            trade = "HOLD"
+
         return {
             "ticker": symbol.upper(),
             "asset_class": "equity",
