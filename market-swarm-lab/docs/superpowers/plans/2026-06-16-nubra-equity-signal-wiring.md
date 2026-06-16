@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 > **Depends on:** `2026-06-16-nubra-foundation-broker-core.md` must be implemented first (provides `BrokerClient`, `BrokerOrder`, `BrokerRegistry`, `NubraClient`, units, idempotency, market-calendar).
 
-**Goal:** Translate MiroFish agent signals into long-only cash-equity orders for SBIN/RELIANCE/TATAMOTORS, route them through a per-asset-class order handler to the broker, feed Nubra market data into a lean equity context for the agents, and reconcile order/position state against broker truth.
+**Goal:** Translate MiroFish agent signals into long-only cash-equity orders for SBIN/RELIANCE/TATACONSUM, route them through a per-asset-class order handler to the broker, feed Nubra market data into a lean equity context for the agents, and reconcile order/position state against broker truth.
 
 **Architecture:** `ExecutionEngineService.execute` delegates to an `OrderHandlerRegistry` keyed by asset class; the existing options path is untouched, equity gets `EquityOrderHandler`. The handler runs `SignalToEquityOrder` (whitelist, long-only, sizing, idempotency, market-hours, funds precheck) then calls the broker via `BrokerRegistry`. `NubraFeedAdapter` (impl of the existing `FeedAdapter`) feeds an `EquityContextBuilder` that produces only what the strategy needs (US sources marked `n/a`). `OrderStateTracker` + `PositionSync` keep state from broker truth.
 
@@ -55,7 +55,7 @@ def test_net_qty_for_held_symbol():
 
 def test_net_qty_zero_for_unheld():
     p = BrokerPositionProvider(_FakeBroker())
-    assert p.net_quantity("TATAMOTORS") == 0
+    assert p.net_quantity("TATACONSUM") == 0
 
 def test_has_long_true_only_when_positive():
     p = BrokerPositionProvider(_FakeBroker())
@@ -135,7 +135,7 @@ class _Pos:
 def _xlate(longs=None, account_value=Decimal("100000"), risk_pct=Decimal("0.5"),
            ltp=Decimal("800")):
     return SignalToEquityOrder(
-        whitelist={"SBIN", "RELIANCE", "TATAMOTORS"},
+        whitelist={"SBIN", "RELIANCE", "TATACONSUM"},
         ltp_provider=lambda s: ltp,
         position_provider=_Pos(longs or {}),
         account_value=account_value, risk_per_trade_pct=risk_pct,
@@ -715,13 +715,13 @@ from services.nubra_client.nubra_feed_adapter import NubraFeedAdapter
 
 class _Client:
     def current_price(self, s): return Decimal({"SBIN":"800","RELIANCE":"2900",
-                                                 "TATAMOTORS":"1000"}[s])
+                                                 "TATACONSUM":"1000"}[s])
 
 def test_poll_emits_quote_events_for_all_symbols():
     got = []
-    a = NubraFeedAdapter(_Client(), symbols=["SBIN","RELIANCE","TATAMOTORS"])
+    a = NubraFeedAdapter(_Client(), symbols=["SBIN","RELIANCE","TATACONSUM"])
     a.register_callback(lambda ev: got.append(ev))
-    a.subscribe(["SBIN","RELIANCE","TATAMOTORS"])
+    a.subscribe(["SBIN","RELIANCE","TATACONSUM"])
     a.poll_once()
     syms = {e["symbol"]: e for e in got}
     assert syms["SBIN"]["ltp"] == Decimal("800")
@@ -730,7 +730,7 @@ def test_poll_emits_quote_events_for_all_symbols():
 
 def test_only_subscribed_symbols_emitted():
     got = []
-    a = NubraFeedAdapter(_Client(), symbols=["SBIN","RELIANCE","TATAMOTORS"])
+    a = NubraFeedAdapter(_Client(), symbols=["SBIN","RELIANCE","TATACONSUM"])
     a.register_callback(lambda ev: got.append(ev))
     a.subscribe(["SBIN"])
     a.poll_once()
@@ -1053,4 +1053,4 @@ git commit -m "test: end-to-end equity signal->paper order wiring"
 3. `python scripts/nubra_login.py` (enter OTP) → session cached.
 4. `python scripts/nubra_uat_smoke.py` → confirms auth + place/cancel.
 5. Set `EXECUTION_MODE=live`, `LIVE_TRADING_ENABLED=true`, keep `NUBRA_ENV=UAT`; select `nubra_uat` broker in `registry_bootstrap`.
-6. Run the agent workflow on SBIN/RELIANCE/TATAMOTORS; watch the dry-run payload log before any submit.
+6. Run the agent workflow on SBIN/RELIANCE/TATACONSUM; watch the dry-run payload log before any submit.

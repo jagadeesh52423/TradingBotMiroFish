@@ -82,7 +82,7 @@ Create `config/nubra_config.json`:
 ```json
 {
   "env": "UAT",
-  "whitelist": ["SBIN", "RELIANCE", "TATAMOTORS"],
+  "whitelist": ["SBIN", "RELIANCE", "TATACONSUM"],
   "exchange": "NSE",
   "product": "CNC",
   "default_order_type": "LIMIT",
@@ -843,7 +843,7 @@ class _FakeInst:
     def get_instrument_by_symbol(self, symbol, exchange="NSE"):
         self.calls += 1
         table = {"SBIN": (101, "0.05", 1), "RELIANCE": (202, "0.05", 1),
-                 "TATAMOTORS": (303, "0.05", 1)}
+                 "TATACONSUM": (303, "0.05", 1)}
         ref, tick, lot = table[symbol]
         return type("I", (), {"ref_id": ref, "tick_size": tick, "lot_size": lot})()
 
@@ -1244,7 +1244,7 @@ from decimal import Decimal
 from services.nubra_client.nubra_session import NubraSession
 from services.nubra_client.nubra_client import NubraClient
 
-SYMBOLS = ["SBIN", "RELIANCE", "TATAMOTORS"]
+SYMBOLS = ["SBIN", "RELIANCE", "TATACONSUM"]
 
 def main() -> int:
     env = os.getenv("NUBRA_ENV", "UAT")

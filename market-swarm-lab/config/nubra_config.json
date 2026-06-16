@@ -1,6 +1,6 @@
 {
   "env": "UAT",
-  "whitelist": ["SBIN", "RELIANCE", "TATAMOTORS"],
+  "whitelist": ["SBIN", "RELIANCE", "TATACONSUM"],
   "exchange": "NSE",
   "product": "CNC",
   "default_order_type": "LIMIT",

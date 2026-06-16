@@ -14,7 +14,7 @@ def test_net_qty_for_held_symbol():
 
 def test_net_qty_zero_for_unheld():
     p = BrokerPositionProvider(_FakeBroker())
-    assert p.net_quantity("TATAMOTORS") == 0
+    assert p.net_quantity("TATACONSUM") == 0
 
 
 def test_has_long_true_only_when_positive():

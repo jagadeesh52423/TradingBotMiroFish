@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-16
 **Status:** Approved design, pending implementation plan
-**Scope:** Wire the MiroFish agents to trade **3 NSE cash equities (SBIN, RELIANCE, TATAMOTORS)** via the **Nubra UAT** environment, for **both market data and order execution**. Long-only (CNC delivery). Retail phone+OTP auth.
+**Scope:** Wire the MiroFish agents to trade **3 NSE cash equities (SBIN, RELIANCE, TATACONSUM)** via the **Nubra UAT** environment, for **both market data and order execution**. Long-only (CNC delivery). Retail phone+OTP auth.
 
 ---
 

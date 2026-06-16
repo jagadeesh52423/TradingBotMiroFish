@@ -7,7 +7,7 @@ class _FakeInst:
     def get_instrument_by_symbol(self, symbol, exchange="NSE"):
         self.calls += 1
         table = {"SBIN": (101, "0.05", 1), "RELIANCE": (202, "0.05", 1),
-                 "TATAMOTORS": (303, "0.05", 1)}
+                 "TATACONSUM": (303, "0.05", 1)}
         ref, tick, lot = table[symbol]
         return type("I", (), {"ref_id": ref, "tick_size": tick, "lot_size": lot})()
 

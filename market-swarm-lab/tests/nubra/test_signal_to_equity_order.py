@@ -17,7 +17,7 @@ class _Pos:
 def _xlate(longs=None, account_value=Decimal("100000"), risk_pct=Decimal("0.5"),
            ltp=Decimal("800")):
     return SignalToEquityOrder(
-        whitelist={"SBIN", "RELIANCE", "TATAMOTORS"},
+        whitelist={"SBIN", "RELIANCE", "TATACONSUM"},
         ltp_provider=lambda s: ltp,
         position_provider=_Pos(longs or {}),
         account_value=account_value, risk_per_trade_pct=risk_pct,
