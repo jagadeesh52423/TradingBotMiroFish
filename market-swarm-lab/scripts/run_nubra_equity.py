@@ -94,6 +94,7 @@ class NubraEquityRunner:
         )
         self._signal_builder = EquitySignalBuilder(config.get("signal"))
         self._entry_gate = ExpectedUpsideGate(config.get("entry_threshold", {}))
+        self._min_bars: int = int(config.get("signal", {}).get("min_bars_for_signal", 10))
         self._nubra_client = nubra_client
         self._stack = equity_stack
 
@@ -161,6 +162,27 @@ class NubraEquityRunner:
 
         closes = context["price"]["recent_closes"]
         ltp = float(context["price"]["ltp"])
+
+        # Thin-history guard: skip forecast/signal when bar count is too low to
+        # produce a meaningful signal (e.g. only LTP available → spurious ±500% moves).
+        if len(closes) < self._min_bars:
+            _log.info(
+                "%s | insufficient_history (bars=%d < min=%d) — skipped",
+                symbol, len(closes), self._min_bars,
+            )
+            return {
+                "symbol": symbol,
+                "signal": None,
+                "forecast": None,
+                "risk": None,
+                "entry_gate": None,
+                "nse_sentiment": None,
+                "ltp": ltp,
+                "provider_modes": {},
+                "status": "skipped",
+                "skip_reason": "insufficient_history",
+                "bars": len(closes),
+            }
 
         # ── Phase 2: Forecast + Signal ──────────────────────────────────────
         forecast = self._forecasting.forecast_from_prices(symbol, closes, horizon=5)

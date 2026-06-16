@@ -35,7 +35,8 @@
       "neg_threshold": -0.3,
       "weak_confidence": 0.55
     },
-    "min_confidence_threshold": 0.60
+    "min_confidence_threshold": 0.60,
+    "min_bars_for_signal": 10
   },
   "nse": {
     "lookback_days": 7,

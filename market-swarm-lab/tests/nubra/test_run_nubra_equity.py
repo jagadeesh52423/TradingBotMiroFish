@@ -184,6 +184,11 @@ class TestConfigLoading:
         assert "no_nse" in cw and "with_nse" in cw
         assert "news_override" in signal
 
+    def test_config_has_min_bars_for_signal(self):
+        cfg = _load_config()
+        assert "min_bars_for_signal" in cfg["signal"]
+        assert cfg["signal"]["min_bars_for_signal"] == 10
+
     def test_config_has_nse_block(self):
         cfg = _load_config()
         assert "nse" in cfg
@@ -365,6 +370,123 @@ class TestEntryGate:
         runner, _ = _make_runner(forecast=_BULLISH_FORECAST)
         result = runner._process_symbol("SBIN", dry_run=True)
         assert result["entry_gate"]["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Thin-history skip guard
+# ---------------------------------------------------------------------------
+
+class _ThinNubraClient(_FakeNubraClient):
+    """Returns only `n_bars` OHLCV bars (simulates UAT symbols with sparse history)."""
+    def __init__(self, n_bars: int):
+        self._n = n_bars
+
+    def historical(self, symbol, interval="1d", lookback=20):
+        return [{"close": 810.0 + i, "timestamp": i * 86400} for i in range(self._n)]
+
+
+def _make_runner_thin(n_bars: int, min_bars: int | None = None, forecast=None):
+    """Build a runner with a thin-history NubraClient and optional min_bars override."""
+    cfg = {**_CFG}
+    if min_bars is not None:
+        cfg = {**cfg, "signal": {**cfg.get("signal", {}), "min_bars_for_signal": min_bars}}
+    stack = _FakeStack()
+    runner = NubraEquityRunner(
+        cfg,
+        forecasting=_FakeForecasting(forecast),
+        mirofish=_FakeMirofish(),
+        risk_engine=RiskEngineService(),
+        nse_collector=_FakeNse(),
+        nubra_client=_ThinNubraClient(n_bars),
+        equity_stack=stack,
+    )
+    return runner, stack
+
+
+class TestThinHistorySkip:
+    """Tests for the thin-history guard in _process_symbol.
+
+    When recent_closes has fewer bars than min_bars_for_signal, the runner must
+    skip the symbol BEFORE calling the forecaster — no spurious signals generated.
+    """
+
+    def test_thin_history_returns_skipped_status(self):
+        runner, _ = _make_runner_thin(n_bars=1, min_bars=10)
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["status"] == "skipped"
+        assert result["skip_reason"] == "insufficient_history"
+
+    def test_thin_history_result_contains_bar_count(self):
+        runner, _ = _make_runner_thin(n_bars=3, min_bars=10)
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["bars"] == 3
+
+    def test_thin_history_does_not_invoke_forecaster(self):
+        """Forecaster must NOT be called when history is thin — assert via call tracking."""
+        call_log = []
+
+        class _TrackingForecasting:
+            def forecast_from_prices(self, ticker, closes, horizon=5):
+                call_log.append(ticker)
+                return _BULLISH_FORECAST
+
+        stack = _FakeStack()
+        cfg = {**_CFG, "signal": {**_CFG.get("signal", {}), "min_bars_for_signal": 10}}
+        runner = NubraEquityRunner(
+            cfg,
+            forecasting=_TrackingForecasting(),
+            mirofish=_FakeMirofish(),
+            risk_engine=RiskEngineService(),
+            nse_collector=_FakeNse(),
+            nubra_client=_ThinNubraClient(1),
+            equity_stack=stack,
+        )
+        runner._process_symbol("SBIN", dry_run=True)
+        assert call_log == [], "Forecaster must not be invoked on thin history"
+
+    def test_sufficient_history_proceeds_to_forecast(self):
+        """With bars >= min_bars the symbol must pass the guard and reach forecast."""
+        runner, _ = _make_runner_thin(n_bars=15, min_bars=10)
+        result = runner._process_symbol("SBIN", dry_run=True)
+        # Bullish default forecast → executed (not insufficient_history)
+        assert result["status"] != "skipped" or result.get("skip_reason") != "insufficient_history"
+        assert result["skip_reason"] != "insufficient_history" if result["status"] == "skipped" else True
+
+    def test_exactly_min_bars_proceeds(self):
+        """n_bars == min_bars must NOT be rejected (boundary: < not <=)."""
+        runner, _ = _make_runner_thin(n_bars=10, min_bars=10)
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result.get("skip_reason") != "insufficient_history"
+
+    def test_config_override_changes_cutoff(self):
+        """Raising min_bars_for_signal to 20 should reject a 15-bar symbol."""
+        runner, _ = _make_runner_thin(n_bars=15, min_bars=20)
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["status"] == "skipped"
+        assert result["skip_reason"] == "insufficient_history"
+
+    def test_config_override_lower_cutoff_passes_thin_symbol(self):
+        """Lowering min_bars_for_signal to 1 should let a 3-bar symbol through."""
+        runner, _ = _make_runner_thin(n_bars=3, min_bars=1)
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result.get("skip_reason") != "insufficient_history"
+
+    def test_thin_history_skip_counts_as_skipped_in_run_once(self):
+        """run_once summary must count thin-history symbols as skipped."""
+        cfg = {**_CFG, "signal": {**_CFG.get("signal", {}), "min_bars_for_signal": 10}}
+        stack = _FakeStack()
+        runner = NubraEquityRunner(
+            cfg,
+            forecasting=_FakeForecasting(),
+            mirofish=_FakeMirofish(),
+            risk_engine=RiskEngineService(),
+            nse_collector=_FakeNse(),
+            nubra_client=_ThinNubraClient(1),  # all 3 symbols → thin history
+            equity_stack=stack,
+        )
+        summary = runner.run_once(dry_run=True)
+        assert summary["skipped"] == 3
+        assert summary["traded"] == 0
 
 
 # ---------------------------------------------------------------------------
