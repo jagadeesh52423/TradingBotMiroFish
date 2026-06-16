@@ -169,6 +169,17 @@ class TestExpectedUpsideGateEvaluate:
         allowed, reason = gate.evaluate({"expected_move_pct": 0.005, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is False, "0.005 fraction = 0.5%, below 2.0% threshold"
 
+    def test_unknown_horizon_suffix_raises(self):
+        # F3: unparseable horizon must raise, not silently default to 1 day.
+        gate = _make_gate(min_pct=2.0)
+        with pytest.raises(ValueError, match="Unrecognised horizon format"):
+            gate.evaluate({"expected_move_pct": 0.05, "horizon": "1w", "ticker": "SBIN"})
+
+    def test_non_numeric_horizon_raises(self):
+        gate = _make_gate(min_pct=2.0)
+        with pytest.raises(ValueError, match="Unrecognised horizon format"):
+            gate.evaluate({"expected_move_pct": 0.05, "horizon": "abcd", "ticker": "SBIN"})
+
 
 # ---------------------------------------------------------------------------
 # Integration tests — EquityOrderHandler with entry gates
@@ -270,3 +281,26 @@ class TestEquityOrderHandlerEntryGate:
                   "expected_move_pct": 0.05, "horizon": "1d"}
         result = handler.handle(signal, {"approved": True}, "SBIN")
         assert result["status"] == "market_closed"
+
+    def test_handler_uses_authoritative_ticker_not_signal_ticker(self, tmp_path):
+        # F4: RELIANCE needs 1%; SBIN needs 5%. signal["ticker"] = RELIANCE but
+        # authoritative ticker arg = SBIN. Handler must pass SBIN to gate.
+        # Without F4: gate reads "RELIANCE" → 1% threshold → 2% upside passes.
+        # With F4:    gate reads "SBIN"     → 5% threshold → 2% upside blocked.
+        broker = _Broker()
+        gate = _make_gate(min_pct=2.0, per_symbol={"SBIN": 5.0, "RELIANCE": 1.0})
+        xlate = SignalToEquityOrder(
+            whitelist={"SBIN", "RELIANCE"}, ltp_provider=lambda s: Decimal("100"),
+            position_provider=_Pos(), account_value=Decimal("1000000"),
+            risk_per_trade_pct=Decimal("0.5"), price_type="LIMIT")
+        handler = EquityOrderHandler(
+            translator=xlate, broker=broker,
+            tracker=OrderStateTracker(env="UAT", base_dir=str(tmp_path)),
+            funds_check=lambda o: True,
+            clock=lambda: OPEN_NOW,
+            entry_gates=[gate])
+        signal = {"ticker": "RELIANCE", "trade": "CALL", "signal_id": "s10",
+                  "expected_move_pct": 0.02, "horizon": "1d"}
+        result = handler.handle(signal, {"approved": True}, "SBIN")
+        assert result["status"] == "below_threshold", \
+            "handler must pass authoritative ticker arg to gate, not signal['ticker']"

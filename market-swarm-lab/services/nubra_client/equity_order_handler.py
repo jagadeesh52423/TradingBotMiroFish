@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime
 
@@ -11,6 +12,7 @@ from services.nubra_client.order_handler import OrderHandler
 _CONFIG_PATH = os.path.join(
     os.path.dirname(__file__), "..", "..", "config", "nubra_config.json"
 )
+_log = logging.getLogger(__name__)
 
 
 def _default_gates() -> list[EntryGate]:
@@ -18,8 +20,10 @@ def _default_gates() -> list[EntryGate]:
         with open(_CONFIG_PATH) as fh:
             cfg = json.load(fh)
         return [ExpectedUpsideGate(cfg["entry_threshold"])]
-    except Exception:
-        return [ExpectedUpsideGate({"min_expected_upside_pct": 2.0, "per_symbol": {}, "max_horizon_days": None})]
+    except (KeyError, json.JSONDecodeError, TypeError, ValueError, OSError) as exc:
+        # Config missing or malformed — fall back and warn so it never silently skips gate.
+        _log.warning("entry_threshold config unreadable (%s); using gate defaults", exc)
+        return [ExpectedUpsideGate({})]
 
 
 class EquityOrderHandler(OrderHandler):
@@ -45,8 +49,10 @@ class EquityOrderHandler(OrderHandler):
 
         # Entry gates apply only to bullish (CALL) entries; exits and holds bypass.
         if signal.get("trade") == "CALL":
+            # F4: inject authoritative ticker so per-symbol lookup never uses a stale signal value.
+            gate_signal = {**signal, "ticker": ticker}
             for gate in self._entry_gates:
-                allowed, reason = gate.evaluate(signal)
+                allowed, reason = gate.evaluate(gate_signal)
                 if not allowed:
                     return {"asset_class": "equity", "status": "below_threshold",
                             "reason": reason}

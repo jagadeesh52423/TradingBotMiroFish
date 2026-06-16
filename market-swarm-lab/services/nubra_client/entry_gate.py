@@ -55,10 +55,18 @@ class ExpectedUpsideGate(EntryGate):
 
     @staticmethod
     def _parse_horizon_days(horizon: str) -> float:
-        horizon = horizon.strip().lower()
-        if horizon.endswith("d"):
-            return float(horizon[:-1])
-        if horizon.endswith("h"):
-            return float(horizon[:-1]) / 24.0
-        # unknown suffix — treat as 1 day
-        return 1.0
+        """Parse horizon strings of the form <N>d or <N>h (e.g. "1d", "4h", "5d").
+        Raises ValueError on an unrecognised format so callers are not silently
+        wrong about the horizon length."""
+        h = horizon.strip().lower()
+        try:
+            if h.endswith("d"):
+                return float(h[:-1])
+            if h.endswith("h"):
+                return float(h[:-1]) / 24.0
+        except (ValueError, IndexError):
+            pass
+        raise ValueError(
+            f"Unrecognised horizon format {horizon!r}. "
+            "Expected '<N>d' (days) or '<N>h' (hours), e.g. '1d', '4h'."
+        )
