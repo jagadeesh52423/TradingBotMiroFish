@@ -82,3 +82,39 @@ class NubraClient:
         msg = self._sdk_portfolio.positions("V2")
         raw = (msg.portfolio.positions or []) if msg.portfolio else []
         return [{"symbol": p.symbol, "net_quantity": p.net_quantity or 0} for p in raw]
+
+    def historical(self, symbol: str, interval: str = "1d", lookback: int = 20) -> list[dict]:
+        """Return recent OHLCV close bars in RUPEES, sorted oldest-first.
+
+        Wraps SDK MarketData.historical_data (charts/timeseries).
+        Returns at most *lookback* bars; each bar is {"close": float, "timestamp": int (ms)}.
+        """
+        from datetime import datetime, timedelta, timezone
+        end = datetime.now(timezone.utc)
+        # ~2.5× calendar days to cover lookback trading days (weekends + holidays)
+        start = end - timedelta(days=int(lookback * 2.5))
+        request = {
+            "exchange": self._cfg.get("exchange", "NSE"),
+            "type": "STOCK",
+            "values": [symbol],
+            "fields": ["close"],
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "interval": interval,
+            "intraDay": False,
+            "realTime": False,
+        }
+        resp = self._sdk_market.historical_data(request)
+        bars: list[dict] = []
+        if resp and resp.result:
+            for chart_data in resp.result:
+                for sym_map in chart_data.values:
+                    stock_chart = sym_map.get(symbol) or next(iter(sym_map.values()), None)
+                    if stock_chart and stock_chart.close:
+                        for pt in stock_chart.close:
+                            bars.append({
+                                "close": float(paise_to_rupees(pt.value)),
+                                "timestamp": pt.timestamp,
+                            })
+        bars.sort(key=lambda b: b["timestamp"])
+        return bars[-lookback:]
