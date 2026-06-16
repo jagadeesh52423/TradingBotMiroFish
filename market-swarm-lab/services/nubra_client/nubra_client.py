@@ -13,24 +13,32 @@ _PRODUCT = {"CNC": "ORDER_DELIVERY_TYPE_CNC", "IDAY": "ORDER_DELIVERY_TYPE_IDAY"
 class NubraClient:
     """Only module that imports nubra_sdk. Tests inject fake sdk_* handles."""
 
-    def __init__(self, config: dict, sdk_trader, sdk_market, sdk_instruments) -> None:
+    def __init__(self, config: dict, sdk_trader, sdk_market, sdk_instruments,
+                 sdk_portfolio=None) -> None:
         self._cfg = config
         self._sdk_trader = sdk_trader
         self._sdk_market = sdk_market
+        self._sdk_portfolio = sdk_portfolio
         self._resolver = InstrumentResolver(sdk_instruments,
                                             exchange=config.get("exchange", "NSE"))
 
     @classmethod
-    def from_session(cls, config: dict, session_token: str) -> "NubraClient":
-        # Production wiring — confirm paths against installed nubra_python_sdk:
-        # from nubra_python_sdk.start_sdk import InitNubraSdk, NubraEnv
-        # from nubra_python_sdk.trading.trading_data import NubraTrader
-        # from nubra_python_sdk.marketdata.market_data import MarketData
-        # from nubra_python_sdk.refdata.instruments import InstrumentData
-        # env = NubraEnv.UAT if config["env"] == "UAT" else NubraEnv.PROD
-        # nubra = InitNubraSdk(env, session_token=session_token)
-        # return cls(config, NubraTrader(nubra, version="V2"), MarketData(nubra), InstrumentData(nubra))
-        raise NotImplementedError("Wire real SDK handles per nubra_python_sdk; stub for UAT wiring.")
+    def from_session(cls, config: dict, session_token: str | None) -> "NubraClient":
+        from nubra_python_sdk.start_sdk import InitNubraSdk, NubraEnv
+        from nubra_python_sdk.trading.trading_data import NubraTrader
+        from nubra_python_sdk.marketdata.market_data import MarketData
+        from nubra_python_sdk.portfolio.portfolio_data import NubraPortfolio
+        from nubra_python_sdk.refdata.instruments import InstrumentData
+        # session_token accepted for interface compat; SDK manages its own session via shelve.
+        env = NubraEnv.UAT if config.get("env", "UAT") == "UAT" else NubraEnv.PROD
+        nubra = InitNubraSdk(env=env, env_creds=True)
+        return cls(
+            config,
+            sdk_trader=NubraTrader(nubra),
+            sdk_market=MarketData(nubra),
+            sdk_instruments=InstrumentData(nubra),
+            sdk_portfolio=NubraPortfolio(nubra),
+        )
 
     def current_price(self, symbol: str) -> Decimal:
         result = self._sdk_market.current_price(symbol, exchange=self._cfg.get("exchange", "NSE"))
@@ -64,5 +72,13 @@ class NubraClient:
     def get_order(self, order_id: str):
         return self._sdk_trader.get_order(order_id)
 
-    def positions(self) -> list:
-        return self._sdk_trader.positions(version="V2")
+    def funds(self) -> dict:
+        msg = self._sdk_portfolio.funds()
+        pf = msg.port_funds_and_margin
+        amount = pf.net_margin_available if pf is not None else 0
+        return {"net_margin_available": amount or 0}
+
+    def positions(self) -> list[dict]:
+        msg = self._sdk_portfolio.positions("V2")
+        raw = (msg.portfolio.positions or []) if msg.portfolio else []
+        return [{"symbol": p.symbol, "net_quantity": p.net_quantity or 0} for p in raw]
