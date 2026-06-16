@@ -43,7 +43,9 @@ def _handler(tmp_path, broker, longs=None, funds_ok=True, clock=OPEN_NOW):
 
 
 def _sig(trade="CALL", sid="s1"):
-    return {"ticker": "SBIN", "trade": trade, "signal_id": sid, "asset_class": "equity"}
+    # expected_move_pct is a fraction; 0.05 == 5%, comfortably above the 2.0% default gate.
+    return {"ticker": "SBIN", "trade": trade, "signal_id": sid, "asset_class": "equity",
+            "expected_move_pct": 0.05, "horizon": "1d"}
 
 
 def test_places_order_when_all_gates_pass(tmp_path):

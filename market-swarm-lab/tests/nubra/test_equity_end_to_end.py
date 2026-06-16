@@ -31,7 +31,9 @@ def _build(tmp_path):
 
 def test_call_places_then_duplicate_skipped(tmp_path):
     broker, reg = _build(tmp_path)
-    sig = {"asset_class": "equity", "trade": "CALL", "ticker": "SBIN", "signal_id": "s1"}
+    # expected_move_pct is a fraction; 0.05 == 5%, above the default 2.0% gate.
+    sig = {"asset_class": "equity", "trade": "CALL", "ticker": "SBIN", "signal_id": "s1",
+           "expected_move_pct": 0.05, "horizon": "1d"}
     out1 = reg.dispatch("equity", sig, {"approved": True}, "SBIN")
     out2 = reg.dispatch("equity", sig, {"approved": True}, "SBIN")
     assert out1["status"] == "placed"
@@ -42,9 +44,11 @@ def test_call_places_then_duplicate_skipped(tmp_path):
 def test_put_sells_to_close_existing_long(tmp_path):
     broker, reg = _build(tmp_path)
     reg.dispatch("equity", {"asset_class": "equity", "trade": "CALL", "ticker": "SBIN",
-                             "signal_id": "buy1"}, {"approved": True}, "SBIN")
+                             "signal_id": "buy1", "expected_move_pct": 0.05, "horizon": "1d"},
+                 {"approved": True}, "SBIN")
     held = {p["symbol"]: p["net_quantity"] for p in broker.get_positions()}["SBIN"]
     out = reg.dispatch("equity", {"asset_class": "equity", "trade": "PUT", "ticker": "SBIN",
-                                  "signal_id": "sell1"}, {"approved": True}, "SBIN")
+                                  "signal_id": "sell1"},
+                       {"approved": True}, "SBIN")
     assert out["status"] == "placed" and out["side"] == "SELL" and out["qty"] == held
     assert broker.get_positions() == []  # flat after sell-to-close
