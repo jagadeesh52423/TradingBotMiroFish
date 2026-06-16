@@ -17,14 +17,19 @@ Steps:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
-
-_CONFIG_PATH = pathlib.Path(__file__).parents[1] / "config" / "nubra_config.json"
+# market-swarm-lab/ — auth_data.db (shelve) and .env live here.
+_PROJECT_ROOT = pathlib.Path(__file__).parent.parent.resolve()
+_CONFIG_PATH = _PROJECT_ROOT / "config" / "nubra_config.json"
 
 
 def main() -> None:
+    # Pin cwd so the SDK finds auth_data.db and .env in the same location as nubra_login.py.
+    os.chdir(_PROJECT_ROOT)
+
     try:
         from services.nubra_client.nubra_client import NubraClient
     except ImportError as exc:
