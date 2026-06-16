@@ -54,9 +54,11 @@ class NseAnnouncementsCollector:
         self,
         session: requests.Session | None = None,
         lookback_days: int = 7,
+        cache_ttl_seconds: int = _CACHE_TTL_SECONDS,
     ) -> None:
         self._session = session
         self._lookback_days = lookback_days
+        self._cache_ttl = cache_ttl_seconds
         self._primed = False
         self._cache: dict[str, tuple[list[dict], float]] = {}  # symbol → (items, expiry)
 
@@ -70,7 +72,7 @@ class NseAnnouncementsCollector:
         else:
             try:
                 items = self._fetch(symbol)
-                self._cache[symbol] = (items, time.monotonic() + _CACHE_TTL_SECONDS)
+                self._cache[symbol] = (items, time.monotonic() + self._cache_ttl)
                 provider_mode = "nse_live"
             except Exception as exc:
                 _log.warning("NSE fetch failed for %s: %s", symbol, exc)

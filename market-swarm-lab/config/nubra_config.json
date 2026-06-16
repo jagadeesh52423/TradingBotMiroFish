@@ -1,18 +1,45 @@
 {
   "env": "UAT",
-  "whitelist": ["SBIN", "RELIANCE", "TATACONSUM"],
+  "whitelist": [
+    "ADANIGREEN","ADANIPORTS","ADANIPOWER","APOLLO","ASIANPAINT",
+    "AXISBANK","BAJAJFINSV","BAJFINANCE","BHARTIARTL","BPCL",
+    "DRREDDY","EICHERMOT","GAIL","HCLTECH","HDFCBANK",
+    "HDFCLIFE","HEROMOTOCO","HINDUNILVR","HUDCO","ICICIBANK",
+    "INDIGO","INFY","ITC","JSWSTEEL","KOTAKBANK",
+    "LICI","LT","LUPIN","M&MFIN","MARICO",
+    "MARUTI","NTPC","ONGC","POWERGRID","RELIANCE",
+    "SBICARD","SBILIFE","SBIN","SIEMENS","SUNPHARMA",
+    "TATACONSUM","TATAPOWER","TATASTEEL","TCS","TECHM",
+    "TITAN","ULTRACEMCO","WIPRO"
+  ],
   "exchange": "NSE",
   "product": "CNC",
   "default_order_type": "LIMIT",
   "validity": "DAY",
   "limit_offset_pct": 0.0,
   "risk_per_trade_pct": 0.5,
-  "max_trades_per_day": 3,
+  "max_trades_per_day": 5,
   "session_file_dir": "~",
   "instrument_cache_ttl_hours": 12,
   "entry_threshold": {
     "min_expected_upside_pct": 2.0,
     "per_symbol": {},
     "max_horizon_days": null
+  },
+  "signal": {
+    "tf_weight": 0.6,
+    "sim_weight": 0.4,
+    "tf_weight_with_nse": 0.5,
+    "sim_weight_with_nse": 0.3,
+    "nse_weight": 0.2,
+    "min_confidence_threshold": 0.60
+  },
+  "nse": {
+    "lookback_days": 7,
+    "cache_ttl_seconds": 900
+  },
+  "runner": {
+    "max_workers": 3,
+    "inter_batch_sleep_secs": 0.5
   }
 }

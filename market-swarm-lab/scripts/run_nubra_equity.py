@@ -1,0 +1,319 @@
+"""Nubra equity runner — processes Nifty50 whitelist through the full signal pipeline.
+
+Usage:
+    python scripts/run_nubra_equity.py --once
+    python scripts/run_nubra_equity.py --interval 3600
+    python scripts/run_nubra_equity.py --once --dry-run
+
+The 3-phase pipeline per symbol:
+  1. Fetch  — OHLCV via NubraClient.historical() + NSE announcements
+  2. Signal — TimesFM forecast → MiroFish simulation → EquitySignalBuilder
+  3. Trade  — RiskEngine → ExpectedUpsideGate → ExecutionEngine (or skip in dry-run)
+
+Config toggles (set in .env or environment):
+  MIROFISH_BASE_URL   — if set, MiroFish runs as a remote service
+  ENABLE_TIMESFM      — if "false", uses linear fallback instead of neural model
+
+All `provider_mode` values are logged per symbol so Caveats D/E are always visible.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import pathlib
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
+from typing import Any
+
+_ROOT = pathlib.Path(__file__).parents[1]
+# Add _ROOT so services/nubra_client, services/nse_announcements, services/forecasting resolve.
+sys.path.insert(0, str(_ROOT))
+# Services with hyphenated directories are not importable as packages — add them individually.
+for _svc in ("mirofish-bridge", "risk-engine"):
+    _p = str(_ROOT / "services" / _svc)
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from mirofish_bridge_service import MiroFishBridgeService  # noqa: E402 (after sys.path setup)
+from risk_engine_service import RiskEngineService  # noqa: E402
+
+from services.nse_announcements.nse_announcements_collector import NseAnnouncementsCollector
+from services.nubra_client.entry_gate import ExpectedUpsideGate
+from services.nubra_client.equity_assembly import build_equity_stack
+from services.nubra_client.equity_context_builder import build_equity_context
+from services.nubra_client.equity_signal_builder import EquitySignalBuilder
+from services.forecasting.forecasting_service import TimesFMForecastingService
+
+_log = logging.getLogger(__name__)
+_CONFIG_PATH = _ROOT / "config" / "nubra_config.json"
+
+# Map EquitySignalBuilder "bullish"/"bearish"/"neutral" back to the direction
+# labels the MiroFish local formula checks ("up"/"down"/"sideways").
+_TRADE_TO_FORECAST_DIR: dict[str, str] = {
+    "bullish": "up",
+    "bearish": "down",
+    "neutral": "sideways",
+}
+
+
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
+
+class NubraEquityRunner:
+    """Processes each whitelisted symbol through the full signal → execution pipeline."""
+
+    def __init__(
+        self,
+        config: dict,
+        *,
+        forecasting: TimesFMForecastingService | None = None,
+        mirofish: MiroFishBridgeService | None = None,
+        risk_engine: RiskEngineService | None = None,
+        nse_collector: NseAnnouncementsCollector | None = None,
+        nubra_client=None,
+        equity_stack=None,
+    ) -> None:
+        self._cfg = config
+        self._whitelist: list[str] = config["whitelist"]
+        self._max_workers: int = int(config.get("runner", {}).get("max_workers", 3))
+        self._sleep_secs: float = float(
+            config.get("runner", {}).get("inter_batch_sleep_secs", 0.5)
+        )
+        self._max_trades: int = int(config.get("max_trades_per_day", 5))
+
+        self._forecasting = forecasting or TimesFMForecastingService()
+        self._mirofish = mirofish or MiroFishBridgeService()
+        self._risk = risk_engine or RiskEngineService()
+        self._nse = nse_collector or NseAnnouncementsCollector(
+            lookback_days=int(config.get("nse", {}).get("lookback_days", 7)),
+            cache_ttl_seconds=int(config.get("nse", {}).get("cache_ttl_seconds", 900)),
+        )
+        self._signal_builder = EquitySignalBuilder(config.get("signal"))
+        self._entry_gate = ExpectedUpsideGate(config.get("entry_threshold", {}))
+        self._nubra_client = nubra_client
+        self._stack = equity_stack
+
+        self._trade_count = 0
+        self._trade_lock = Lock()
+
+    # ------------------------------------------------------------------ public
+
+    def run_once(self, *, dry_run: bool = False) -> dict[str, Any]:
+        _log.info(
+            "run_once start | symbols=%d max_trades=%d dry_run=%s",
+            len(self._whitelist), self._max_trades, dry_run,
+        )
+        results: list[dict] = []
+        batches = _chunk(self._whitelist, self._max_workers)
+
+        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+            for batch in batches:
+                futures = {
+                    pool.submit(self._process_symbol, sym, dry_run=dry_run): sym
+                    for sym in batch
+                }
+                for future in as_completed(futures):
+                    sym = futures[future]
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        _log.error("Symbol %s failed: %s", sym, exc, exc_info=True)
+                        result = {"symbol": sym, "status": "error", "error": str(exc)}
+                    results.append(result)
+                    _log.info(
+                        "%s | status=%s provider_modes=%s",
+                        sym,
+                        result.get("status"),
+                        result.get("provider_modes"),
+                    )
+                time.sleep(self._sleep_secs)
+
+        traded = [r for r in results if r.get("status") == "executed"]
+        skipped = [r for r in results if r.get("status") == "skipped"]
+        errors = [r for r in results if r.get("status") == "error"]
+        _log.info(
+            "run_once done | traded=%d skipped=%d errors=%d",
+            len(traded), len(skipped), len(errors),
+        )
+        return {
+            "symbols_processed": len(results),
+            "traded": len(traded),
+            "skipped": len(skipped),
+            "errors": len(errors),
+            "results": results,
+        }
+
+    # ----------------------------------------------------------------- private
+
+    def _process_symbol(self, symbol: str, *, dry_run: bool) -> dict[str, Any]:
+        # ── Phase 1: Fetch ──────────────────────────────────────────────────
+        if self._nubra_client is None:
+            raise RuntimeError(
+                "nubra_client required for live run — pass via constructor or use dry_run with stub"
+            )
+
+        context = build_equity_context(symbol, self._nubra_client)
+        nse_result = self._nse.collect(symbol)
+
+        closes = context["price"]["recent_closes"]
+        ltp = float(context["price"]["ltp"])
+
+        # ── Phase 2: Forecast + Signal ──────────────────────────────────────
+        forecast = self._forecasting.forecast_from_prices(symbol, closes, horizon=5)
+
+        sim_request = {
+            "documents": nse_result["documents"],
+            "forecast_summary": {
+                "direction": _TRADE_TO_FORECAST_DIR.get(forecast["direction"], "sideways"),
+                "confidence": forecast["confidence"],
+            },
+            "personas_config": [],
+            "scenario": "equity_trend_daily",
+        }
+        simulation = self._mirofish.simulate(sim_request)
+        signal = self._signal_builder.build(
+            symbol, forecast, simulation, nse_result=nse_result
+        )
+
+        provider_modes = {
+            "timesfm": forecast.get("provider_mode"),
+            "mirofish": simulation.get("provider_mode"),
+            "nse": nse_result.get("provider_mode"),
+        }
+
+        # ── Phase 3: Risk + Execute ─────────────────────────────────────────
+        # HOLD short-circuit: no directional signal → skip before calling the risk engine.
+        if signal["trade"] == "HOLD":
+            return {
+                "symbol": symbol,
+                "signal": signal,
+                "forecast": {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]},
+                "risk": {"approved": False, "notes": ["HOLD — no directional signal"]},
+                "entry_gate": {"ok": False, "reason": "HOLD"},
+                "nse_sentiment": nse_result.get("sentiment_label"),
+                "ltp": ltp,
+                "provider_modes": provider_modes,
+                "status": "skipped",
+                "skip_reason": "HOLD",
+            }
+
+        # RiskEngineService expects source_audit values as dicts (e.g. {"status": "live"}).
+        # equity_context_builder marks US sources as the string "n/a" which is incompatible.
+        # Build a risk-adapted context: strip n/a string entries so the engine's .get() calls
+        # receive either a proper dict or nothing (defaults to {}).
+        risk_context = {
+            **context,
+            "source_audit": _build_risk_audit(context["source_audit"], nse_result),
+        }
+        risk_result = self._risk.evaluate(signal, risk_context)
+        gate_ok, gate_reason = self._entry_gate.evaluate(signal)
+
+        base = {
+            "symbol": symbol,
+            "signal": signal,
+            "forecast": {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]},
+            "risk": {"approved": risk_result["approved"], "notes": risk_result.get("risk_notes", [])},
+            "entry_gate": {"ok": gate_ok, "reason": gate_reason},
+            "nse_sentiment": nse_result.get("sentiment_label"),
+            "ltp": ltp,
+            "provider_modes": provider_modes,
+        }
+
+        if not risk_result["approved"]:
+            return {**base, "status": "skipped", "skip_reason": "risk_rejected"}
+
+        if not gate_ok:
+            return {**base, "status": "skipped", "skip_reason": gate_reason or "entry_gate"}
+
+        with self._trade_lock:
+            if self._trade_count >= self._max_trades:
+                return {**base, "status": "skipped", "skip_reason": "max_trades_per_day"}
+            if not dry_run:
+                self._stack.registry.dispatch("equity", signal, risk_result, symbol)
+            self._trade_count += 1
+
+        return {**base, "status": "executed", "dry_run": dry_run}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _build_risk_audit(equity_audit: dict, nse_result: dict) -> dict:
+    """Convert equity context's flat source_audit to the dict format RiskEngineService expects.
+
+    equity_context_builder marks US-only sources (reddit, news, …) as the string "n/a".
+    RiskEngineService does source_audit.get("news") or {} and then calls .get() on the result,
+    which crashes when the value is a string. We strip those out and inject the NSE audit entry.
+    """
+    risk_audit: dict = {}
+    for key, val in equity_audit.items():
+        if isinstance(val, dict):
+            risk_audit[key] = val
+        # string "n/a" / "ok" entries are equity-context shorthand — omit them from risk context
+    # Merge NSE announcements audit so Rule 3 (news fallback → confidence reduction) fires correctly.
+    nse_sub_audit = nse_result.get("source_audit", {})
+    if nse_sub_audit:
+        risk_audit.update(nse_sub_audit)
+    return risk_audit
+
+
+def _chunk(lst: list, size: int):
+    for i in range(0, len(lst), size):
+        yield lst[i : i + size]
+
+
+def _load_config(path: pathlib.Path = _CONFIG_PATH) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Nubra equity signal runner")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--once", action="store_true", help="Run one pass then exit")
+    mode.add_argument(
+        "--interval", type=int, metavar="SECONDS", help="Loop with this sleep between runs"
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Skip order placement")
+    parser.add_argument("--config", default=str(_CONFIG_PATH), help="Path to nubra_config.json")
+    parser.add_argument("--log-level", default="INFO", help="Python logging level")
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> None:
+    args = _parse_args(argv)
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+
+    config = _load_config(pathlib.Path(args.config))
+    stack = build_equity_stack("nubra_uat", config)
+    runner = NubraEquityRunner(
+        config,
+        nubra_client=stack.broker,  # NubraBroker exposes current_price + historical via client
+        equity_stack=stack,
+    )
+
+    if args.once:
+        summary = runner.run_once(dry_run=args.dry_run)
+        print(json.dumps(summary, indent=2, default=str))
+    else:
+        while True:
+            summary = runner.run_once(dry_run=args.dry_run)
+            print(json.dumps(summary, indent=2, default=str))
+            runner._trade_count = 0  # reset daily cap between intervals
+            _log.info("Sleeping %ds before next run", args.interval)
+            time.sleep(args.interval)
+
+
+if __name__ == "__main__":
+    main()
