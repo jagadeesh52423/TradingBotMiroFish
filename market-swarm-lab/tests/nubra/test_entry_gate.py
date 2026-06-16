@@ -169,16 +169,24 @@ class TestExpectedUpsideGateEvaluate:
         allowed, reason = gate.evaluate({"expected_move_pct": 0.005, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is False, "0.005 fraction = 0.5%, below 2.0% threshold"
 
-    def test_unknown_horizon_suffix_raises(self):
-        # F3: unparseable horizon must raise, not silently default to 1 day.
-        gate = _make_gate(min_pct=2.0)
+    def test_unknown_horizon_suffix_raises_when_cap_set(self):
+        # F3 (lazy parse): _parse_horizon_days is only called when max_horizon_days is set.
+        # With a cap configured, a bad suffix must still raise so the caller knows it's invalid.
+        gate = _make_gate(min_pct=2.0, max_horizon_days=5.0)
         with pytest.raises(ValueError, match="Unrecognised horizon format"):
             gate.evaluate({"expected_move_pct": 0.05, "horizon": "1w", "ticker": "SBIN"})
 
-    def test_non_numeric_horizon_raises(self):
-        gate = _make_gate(min_pct=2.0)
+    def test_non_numeric_horizon_raises_when_cap_set(self):
+        gate = _make_gate(min_pct=2.0, max_horizon_days=5.0)
         with pytest.raises(ValueError, match="Unrecognised horizon format"):
             gate.evaluate({"expected_move_pct": 0.05, "horizon": "abcd", "ticker": "SBIN"})
+
+    def test_no_cap_bad_horizon_is_silent(self):
+        # F3 (lazy parse): with no cap, an unparseable horizon must NOT raise —
+        # the upside gate never needs to know the numeric horizon length.
+        gate = _make_gate(min_pct=2.0, max_horizon_days=None)
+        allowed, reason = gate.evaluate({"expected_move_pct": 0.05, "horizon": "1w", "ticker": "SBIN"})
+        assert allowed is True  # 5% upside passes 2% gate; horizon irrelevant
 
 
 # ---------------------------------------------------------------------------
@@ -281,6 +289,19 @@ class TestEquityOrderHandlerEntryGate:
                   "expected_move_pct": 0.05, "horizon": "1d"}
         result = handler.handle(signal, {"approved": True}, "SBIN")
         assert result["status"] == "market_closed"
+
+    def test_bad_horizon_with_cap_returns_skipped_not_exception(self, tmp_path):
+        # Handler must catch ValueError from gate.evaluate (bad horizon + cap set)
+        # and return {"status": "skipped"} rather than propagating the exception.
+        broker = _Broker()
+        gate = _make_gate(min_pct=2.0, max_horizon_days=5.0)
+        handler = _handler(tmp_path, broker, gates=[gate])
+        signal = {"ticker": "SBIN", "trade": "CALL", "signal_id": "s_badh",
+                  "expected_move_pct": 0.05, "horizon": "1w"}  # malformed horizon
+        result = handler.handle(signal, {"approved": True}, "SBIN")
+        assert result["status"] == "skipped"
+        assert "Unrecognised horizon" in result.get("reason", "")
+        assert len(broker.placed) == 0
 
     def test_handler_uses_authoritative_ticker_not_signal_ticker(self, tmp_path):
         # F4: RELIANCE needs 1%; SBIN needs 5%. signal["ticker"] = RELIANCE but

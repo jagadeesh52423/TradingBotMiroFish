@@ -2,6 +2,7 @@ from decimal import Decimal
 import pytest
 from services.nubra_client.equity_assembly import build_equity_stack, EquityStack
 from services.nubra_client.equity_order_handler import EquityOrderHandler
+from services.nubra_client.order_handler import OrderHandlerRegistry
 
 
 _CFG = {
@@ -45,6 +46,26 @@ def test_paper_ltp_override_used(tmp_path):
 def test_unknown_mode_raises(tmp_path):
     with pytest.raises(ValueError, match="Unknown equity mode"):
         build_equity_stack("live_prod", _CFG, state_dir=str(tmp_path))
+
+
+def test_paper_stack_has_registry(tmp_path):
+    stack = build_equity_stack("paper", _CFG, state_dir=str(tmp_path))
+    assert isinstance(stack.registry, OrderHandlerRegistry)
+
+
+def test_paper_registry_dispatches_to_equity_handler(tmp_path):
+    # G2: registry.dispatch("equity", ...) must route to the wired handler.
+    stack = build_equity_stack("paper", _CFG, state_dir=str(tmp_path))
+    signal = {"ticker": "SBIN", "trade": "CALL", "signal_id": "r1",
+              "expected_move_pct": 0.02, "horizon": "1d"}
+    result = stack.registry.dispatch("equity", signal, {"approved": False}, "SBIN")
+    assert result["status"] == "rejected_by_risk"
+
+
+def test_paper_registry_unknown_asset_class_raises(tmp_path):
+    stack = build_equity_stack("paper", _CFG, state_dir=str(tmp_path))
+    with pytest.raises(KeyError, match="options"):
+        stack.registry.dispatch("options", {}, {}, "SBIN")
 
 
 # ---------------------------------------------------------------------------

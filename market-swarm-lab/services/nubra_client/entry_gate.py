@@ -38,12 +38,15 @@ class ExpectedUpsideGate(EntryGate):
         # expected_move_pct is a FRACTION from the strategy engine (e.g. 0.02 == 2%).
         upside_pct = float(signal.get("expected_move_pct", 0.0)) * 100.0
 
-        horizon_days = self._parse_horizon_days(horizon)
-        if self._max_horizon_days is not None and horizon_days > self._max_horizon_days:
-            return False, (
-                f"horizon {horizon} ({horizon_days:.3g}d) "
-                f"> max {self._max_horizon_days:.3g}d"
-            )
+        # Lazy parse: only call _parse_horizon_days when a cap is configured.
+        # Gates without a horizon cap must never raise on an unparseable horizon string.
+        if self._max_horizon_days is not None:
+            horizon_days = self._parse_horizon_days(horizon)
+            if horizon_days > self._max_horizon_days:
+                return False, (
+                    f"horizon {horizon} ({horizon_days:.3g}d) "
+                    f"> max {self._max_horizon_days:.3g}d"
+                )
 
         threshold = self._per_symbol.get(ticker, self._min_pct)
         if upside_pct < threshold:

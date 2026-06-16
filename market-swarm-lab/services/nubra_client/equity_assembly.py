@@ -17,6 +17,7 @@ from typing import Callable
 
 from services.nubra_client.equity_order_handler import EquityOrderHandler
 from services.nubra_client.nubra_feed_adapter import NubraFeedAdapter
+from services.nubra_client.order_handler import OrderHandlerRegistry
 from services.nubra_client.order_state_tracker import OrderStateTracker
 from services.nubra_client.position_provider import BrokerPositionProvider
 from services.nubra_client.position_sync import PositionSync
@@ -34,6 +35,7 @@ class EquityStack:
     translator: SignalToEquityOrder
     broker: object                   # BrokerClient (paper or live)
     feed: NubraFeedAdapter | None    # None in paper mode
+    registry: OrderHandlerRegistry   # pre-wired registry; pass to ExecutionEngineService
 
 
 def build_equity_stack(
@@ -91,7 +93,11 @@ def build_equity_stack(
         funds_check=funds_check,
     )
 
-    return EquityStack(handler=handler, translator=translator, broker=broker, feed=feed)
+    registry = OrderHandlerRegistry()
+    registry.register(handler)
+
+    return EquityStack(handler=handler, translator=translator, broker=broker, feed=feed,
+                       registry=registry)
 
 
 def _paper_components(ltp_override: Callable | None):

@@ -52,7 +52,10 @@ class EquityOrderHandler(OrderHandler):
             # F4: inject authoritative ticker so per-symbol lookup never uses a stale signal value.
             gate_signal = {**signal, "ticker": ticker}
             for gate in self._entry_gates:
-                allowed, reason = gate.evaluate(gate_signal)
+                try:
+                    allowed, reason = gate.evaluate(gate_signal)
+                except ValueError as exc:
+                    return {"asset_class": "equity", "status": "skipped", "reason": str(exc)}
                 if not allowed:
                     return {"asset_class": "equity", "status": "below_threshold",
                             "reason": reason}
