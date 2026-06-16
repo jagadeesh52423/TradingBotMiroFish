@@ -37,7 +37,7 @@ def main() -> None:
     print(f"[smoke] env={config['env']}  whitelist={whitelist}")
 
     print("[smoke] Connecting via NubraClient.from_session …")
-    client = NubraClient.from_session(config, None)
+    client = NubraClient.from_session(config)
     print("[smoke] ✓ SDK initialised")
 
     funds = client.funds()
