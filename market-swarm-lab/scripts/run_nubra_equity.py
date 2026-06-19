@@ -50,10 +50,11 @@ from services.nse_announcements.nse_announcements_collector import NseAnnounceme
 from services.nubra_client.entry_gate import ExpectedUpsideGate
 from services.nubra_client.equity_assembly import build_equity_stack
 from services.nubra_client.equity_context_builder import build_equity_context
-from services.nubra_client.signal_strategies import get_strategy
+from services.nubra_client.signal_strategies import _REGISTRY, get_strategy
 from services.forecasting.forecasting_service import TimesFMForecastingService
 
-_VALID_STRATEGIES = ("blended", "news_only")
+# Derived from the strategy registry so new strategies appear in --help automatically.
+_VALID_STRATEGIES = tuple(sorted(_REGISTRY))
 
 _log = logging.getLogger(__name__)
 _CONFIG_PATH = _ROOT / "config" / "nubra_config.json"
@@ -173,9 +174,9 @@ class NubraEquityRunner:
         closes = context["price"]["recent_closes"]
         ltp = float(context["price"]["ltp"])
 
-        # Thin-history guard: skip forecast/signal when bar count is too low.
-        # news_only skips this guard — news signals don't need OHLCV history.
-        if self._strategy_name != "news_only" and len(closes) < self._min_bars:
+        # Thin-history guard: skip when bar count is too low.
+        # Strategies that don't need OHLCV history declare requires_price_history=False.
+        if self._strategy.requires_price_history and len(closes) < self._min_bars:
             _log.info(
                 "%s | insufficient_history (bars=%d < min=%d) — skipped",
                 symbol, len(closes), self._min_bars,
@@ -195,8 +196,8 @@ class NubraEquityRunner:
             }
 
         # ── Phase 2: Forecast + Signal ──────────────────────────────────────
-        # news_only skips forecast + simulation — derived from NSE sentiment only.
-        if self._strategy_name == "news_only":
+        # Strategies that don't use forecast/simulation declare uses_forecast=False.
+        if not self._strategy.uses_forecast:
             forecast = None
             simulation = None
             signal = self._strategy.build(symbol, context, None, None, nse_result)
@@ -337,7 +338,7 @@ def _parse_args(argv=None):
     parser.add_argument("--log-level", default="INFO", help="Python logging level")
     parser.add_argument(
         "--strategy",
-        choices=list(_VALID_STRATEGIES),
+        choices=sorted(_REGISTRY),
         default=None,
         help="Signal strategy override (default: read from config signal.strategy)",
     )

@@ -20,6 +20,9 @@ _REGISTRY: dict[str, type[SignalStrategy]] = {}
 class SignalStrategy(ABC):
     """Build a tradeable signal dict from the available inputs.
 
+    Capability flags let the runner branch without hardcoding strategy names (OCP).
+    New strategies declare their capabilities here; no runner edits needed.
+
     Args:
         symbol:     NSE ticker (e.g. "SBIN").
         context:    equity_context dict from build_equity_context (price, source_audit …).
@@ -31,6 +34,10 @@ class SignalStrategy(ABC):
         Signal dict (keys: ticker, asset_class, trade, strategy_type, expected_move_pct,
         confidence, horizon, signal_id, …) or None to indicate no signal.
     """
+
+    # Override in subclasses to declare what inputs the strategy needs.
+    requires_price_history: bool = True   # False → thin-history guard bypassed
+    uses_forecast: bool = True            # False → forecast + simulation skipped
 
     @abstractmethod
     def build(
@@ -76,6 +83,9 @@ class BlendedSignalStrategy(SignalStrategy):
     continue to pass because EquitySignalBuilder is not modified.
     """
 
+    requires_price_history = True
+    uses_forecast = True
+
     def __init__(self, config: dict) -> None:
         self._builder = EquitySignalBuilder(config.get("signal"))
 
@@ -111,6 +121,9 @@ class NewsOnlySignalStrategy(SignalStrategy):
             max_expected_filings (int,   default 5)   — upper anchor for filing count scale
     """
 
+    requires_price_history = False
+    uses_forecast = False
+
     _DEFAULT_BUY_THRESHOLD: float = 0.15
     _DEFAULT_SELL_THRESHOLD: float = -0.15
     _DEFAULT_MIN_FILINGS: int = 1
@@ -141,10 +154,13 @@ class NewsOnlySignalStrategy(SignalStrategy):
         )
 
         # expected_move_pct proxy: just clears the ExpectedUpsideGate for CALL signals.
-        # This is a conviction proxy — not a price forecast.
+        # Per-symbol override is consulted in build() so each ticker clears its own gate.
         entry_cfg = config.get("entry_threshold", {})
-        min_upside_pct = float(entry_cfg.get("min_expected_upside_pct", 2.0))
-        self._upside_proxy = min_upside_pct / 100.0
+        self._global_min_upside_pct = float(entry_cfg.get("min_expected_upside_pct", 2.0))
+        self._per_symbol_upside: dict[str, float] = {
+            k.upper(): float(v)
+            for k, v in entry_cfg.get("per_symbol", {}).items()
+        }
 
     def build(
         self,
@@ -171,9 +187,11 @@ class NewsOnlySignalStrategy(SignalStrategy):
 
         confidence = self._compute_confidence(sentiment_score, filing_count)
 
-        # expected_move_pct proxy for CALL: set to just clear the ExpectedUpsideGate.
-        # The "move" is a conviction proxy — news has no price forecast.
-        expected_move_pct = self._upside_proxy if trade == "CALL" else 0.0
+        # expected_move_pct proxy for CALL: max(global, per-symbol) / 100 so the
+        # CALL clears ExpectedUpsideGate even when a symbol has a higher threshold.
+        per_sym_pct = self._per_symbol_upside.get(symbol.upper(), 0.0)
+        min_upside = max(self._global_min_upside_pct, per_sym_pct)
+        expected_move_pct = min_upside / 100.0 if trade == "CALL" else 0.0
 
         reasoning = _extract_subjects(items)
 

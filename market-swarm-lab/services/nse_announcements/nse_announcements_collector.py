@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,20 +36,23 @@ _BROWSER_UA = (
 _REFERER = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
-# Default keyword sets — richer than the original to catch common Indian-equity catalysts.
-# Both sets are config-overridable via config["nse"]["bullish_keywords"] / ["bearish_keywords"].
+# Default keyword sets — config-overridable via config["nse"]["bullish_keywords"] / ["bearish_keywords"].
+# Phrases: matched with word-boundary regex, so single-word stems like "win", "order", "stake"
+# are intentionally omitted — they caused false positives ("winding up"→bullish, "in order to"→bullish,
+# "stakeholder"→bullish).  Use specific phrases instead.
 _DEFAULT_BULLISH_KW: frozenset[str] = frozenset({
     "dividend", "bonus", "buyback", "acquisition", "profit", "growth",
-    "order", "win", "upgrade", "record", "earnings", "expansion",
-    "order win", "contract", "awarded", "successful bidder", "tbcb",
-    "approval", "approved", "launch", "stake", "record date",
-    "results", "partnership", "mou", "fund raise", "qip",
+    "upgrade", "earnings", "expansion",
+    "order win", "wins contract", "bags order", "new order",
+    "contract", "awarded", "successful bidder", "tbcb",
+    "approval", "approved", "launch", "record date",
+    "partnership", "mou", "fund raise", "qip",
 })
 _DEFAULT_BEARISH_KW: frozenset[str] = frozenset({
-    "fine", "penalty", "default", "loss", "fraud", "investigation",
-    "downgrade", "delay", "insolvency", "restructur", "litigation", "adverse",
-    "probe", "resignation", "recall", "strike", "lower guidance",
-    "rating downgrade",
+    "penalty", "fraud", "investigation", "downgrade",
+    "insolvency", "restructuring", "restructured", "litigation", "adverse",
+    "probe", "resignation", "recall", "lower guidance",
+    "rating downgrade", "winding up", "net loss", "going concern",
 })
 
 _CACHE_TTL_SECONDS = 900  # 15 minutes — announcements are slow-changing
@@ -189,14 +193,21 @@ def _score_sentiment(
 ) -> float:
     """Keyword-based sentiment over announcement texts; clamped to [-1, 1].
 
-    Multi-word phrases (e.g. "successful bidder") match as substrings of the lowercased
-    text, so single-word and phrase keywords work identically.
+    Uses word-boundary regex so "win" doesn't match "winding up" and
+    "stake" doesn't match "stakeholder".  Multi-word phrases (e.g. "order win")
+    are matched as exact phrases, also guarded by word boundaries.
     """
     if not items:
         return 0.0
     score = 0.0
     for item in items:
         text = (item.get("attchmntText") or "").lower()
-        score += sum(0.1 for kw in bullish_kw if kw in text)
-        score -= sum(0.1 for kw in bearish_kw if kw in text)
+        score += sum(
+            0.1 for kw in bullish_kw
+            if re.search(r"\b" + re.escape(kw) + r"\b", text)
+        )
+        score -= sum(
+            0.1 for kw in bearish_kw
+            if re.search(r"\b" + re.escape(kw) + r"\b", text)
+        )
     return max(-1.0, min(1.0, round(score, 4)))
