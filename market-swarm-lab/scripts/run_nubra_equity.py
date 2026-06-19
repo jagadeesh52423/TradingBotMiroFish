@@ -4,11 +4,17 @@ Usage:
     python scripts/run_nubra_equity.py --once
     python scripts/run_nubra_equity.py --interval 3600
     python scripts/run_nubra_equity.py --once --dry-run
+    python scripts/run_nubra_equity.py --once --dry-run --strategy news_only
 
 The 3-phase pipeline per symbol:
   1. Fetch  — OHLCV via NubraClient.historical() + NSE announcements
-  2. Signal — TimesFM forecast → MiroFish simulation → EquitySignalBuilder
+  2. Signal — TimesFM forecast → MiroFish simulation → EquitySignalBuilder (blended)
+              OR NSE announcements only → NewsOnlySignalStrategy (news_only)
   3. Trade  — RiskEngine → ExpectedUpsideGate → ExecutionEngine (or skip in dry-run)
+
+Strategy selection:
+  --strategy blended    (default) — full blended pipeline, OHLCV required
+  --strategy news_only  — news-only pipeline; thin-history skip does NOT apply
 
 Config toggles (set in .env or environment):
   MIROFISH_BASE_URL   — if set, MiroFish runs as a remote service
@@ -44,8 +50,10 @@ from services.nse_announcements.nse_announcements_collector import NseAnnounceme
 from services.nubra_client.entry_gate import ExpectedUpsideGate
 from services.nubra_client.equity_assembly import build_equity_stack
 from services.nubra_client.equity_context_builder import build_equity_context
-from services.nubra_client.equity_signal_builder import EquitySignalBuilder
+from services.nubra_client.signal_strategies import get_strategy
 from services.forecasting.forecasting_service import TimesFMForecastingService
+
+_VALID_STRATEGIES = ("blended", "news_only")
 
 _log = logging.getLogger(__name__)
 _CONFIG_PATH = _ROOT / "config" / "nubra_config.json"
@@ -76,6 +84,7 @@ class NubraEquityRunner:
         nse_collector: NseAnnouncementsCollector | None = None,
         nubra_client=None,
         equity_stack=None,
+        strategy: str | None = None,
     ) -> None:
         self._cfg = config
         self._whitelist: list[str] = config["whitelist"]
@@ -88,15 +97,16 @@ class NubraEquityRunner:
         self._forecasting = forecasting or TimesFMForecastingService()
         self._mirofish = mirofish or MiroFishBridgeService()
         self._risk = risk_engine or RiskEngineService()
-        self._nse = nse_collector or NseAnnouncementsCollector(
-            lookback_days=int(config.get("nse", {}).get("lookback_days", 7)),
-            cache_ttl_seconds=int(config.get("nse", {}).get("cache_ttl_seconds", 900)),
-        )
-        self._signal_builder = EquitySignalBuilder(config.get("signal"))
+        self._nse = nse_collector or NseAnnouncementsCollector.from_config(config)
         self._entry_gate = ExpectedUpsideGate(config.get("entry_threshold", {}))
         self._min_bars: int = int(config.get("signal", {}).get("min_bars_for_signal", 10))
         self._nubra_client = nubra_client
         self._stack = equity_stack
+
+        # Strategy: CLI arg overrides config; config defaults to "blended".
+        strategy_name = strategy or config.get("signal", {}).get("strategy", "blended")
+        self._strategy = get_strategy(strategy_name, config)
+        self._strategy_name = strategy_name
 
         self._trade_count = 0
         self._trade_lock = Lock()
@@ -163,9 +173,9 @@ class NubraEquityRunner:
         closes = context["price"]["recent_closes"]
         ltp = float(context["price"]["ltp"])
 
-        # Thin-history guard: skip forecast/signal when bar count is too low to
-        # produce a meaningful signal (e.g. only LTP available → spurious ±500% moves).
-        if len(closes) < self._min_bars:
+        # Thin-history guard: skip forecast/signal when bar count is too low.
+        # news_only skips this guard — news signals don't need OHLCV history.
+        if self._strategy_name != "news_only" and len(closes) < self._min_bars:
             _log.info(
                 "%s | insufficient_history (bars=%d < min=%d) — skipped",
                 symbol, len(closes), self._min_bars,
@@ -185,35 +195,43 @@ class NubraEquityRunner:
             }
 
         # ── Phase 2: Forecast + Signal ──────────────────────────────────────
-        forecast = self._forecasting.forecast_from_prices(symbol, closes, horizon=5)
-
-        sim_request = {
-            "documents": nse_result["documents"],
-            "forecast_summary": {
-                "direction": _TRADE_TO_FORECAST_DIR.get(forecast["direction"], "sideways"),
-                "confidence": forecast["confidence"],
-            },
-            "personas_config": [],
-            "scenario": "equity_trend_daily",
-        }
-        simulation = self._mirofish.simulate(sim_request)
-        signal = self._signal_builder.build(
-            symbol, forecast, simulation, nse_result=nse_result
-        )
-
-        provider_modes = {
-            "timesfm": forecast.get("provider_mode"),
-            "mirofish": simulation.get("provider_mode"),
-            "nse": nse_result.get("provider_mode"),
-        }
+        # news_only skips forecast + simulation — derived from NSE sentiment only.
+        if self._strategy_name == "news_only":
+            forecast = None
+            simulation = None
+            signal = self._strategy.build(symbol, context, None, None, nse_result)
+            provider_modes = {"timesfm": None, "mirofish": None, "nse": nse_result.get("provider_mode")}
+        else:
+            forecast = self._forecasting.forecast_from_prices(symbol, closes, horizon=5)
+            sim_request = {
+                "documents": nse_result["documents"],
+                "forecast_summary": {
+                    "direction": _TRADE_TO_FORECAST_DIR.get(forecast["direction"], "sideways"),
+                    "confidence": forecast["confidence"],
+                },
+                "personas_config": [],
+                "scenario": "equity_trend_daily",
+            }
+            simulation = self._mirofish.simulate(sim_request)
+            signal = self._strategy.build(symbol, context, forecast, simulation, nse_result)
+            provider_modes = {
+                "timesfm": forecast.get("provider_mode"),
+                "mirofish": simulation.get("provider_mode"),
+                "nse": nse_result.get("provider_mode"),
+            }
 
         # ── Phase 3: Risk + Execute ─────────────────────────────────────────
-        # HOLD short-circuit: no directional signal → skip before calling the risk engine.
-        if signal["trade"] == "HOLD":
+        # None signal (strategy declined) or HOLD short-circuit.
+        if signal is None or signal["trade"] == "HOLD":
+            forecast_summary = (
+                {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]}
+                if forecast is not None
+                else None
+            )
             return {
                 "symbol": symbol,
                 "signal": signal,
-                "forecast": {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]},
+                "forecast": forecast_summary,
                 "risk": {"approved": False, "notes": ["HOLD — no directional signal"]},
                 "entry_gate": {"ok": False, "reason": "HOLD"},
                 "nse_sentiment": nse_result.get("sentiment_label"),
@@ -232,10 +250,15 @@ class NubraEquityRunner:
         risk_result = self._risk.evaluate(signal, risk_context)
         gate_ok, gate_reason = self._entry_gate.evaluate(signal)
 
+        forecast_summary = (
+            {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]}
+            if forecast is not None
+            else None
+        )
         base = {
             "symbol": symbol,
             "signal": signal,
-            "forecast": {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]},
+            "forecast": forecast_summary,
             "risk": {"approved": risk_result["approved"], "notes": risk_result.get("risk_notes", [])},
             "entry_gate": {"ok": gate_ok, "reason": gate_reason},
             "nse_sentiment": nse_result.get("sentiment_label"),
@@ -312,6 +335,12 @@ def _parse_args(argv=None):
     parser.add_argument("--dry-run", action="store_true", help="Skip order placement")
     parser.add_argument("--config", default=str(_CONFIG_PATH), help="Path to nubra_config.json")
     parser.add_argument("--log-level", default="INFO", help="Python logging level")
+    parser.add_argument(
+        "--strategy",
+        choices=list(_VALID_STRATEGIES),
+        default=None,
+        help="Signal strategy override (default: read from config signal.strategy)",
+    )
     return parser.parse_args(argv)
 
 
@@ -328,6 +357,7 @@ def main(argv=None) -> None:
         config,
         nubra_client=stack.market_data,  # NubraClient (current_price + historical), NOT the broker
         equity_stack=stack,
+        strategy=args.strategy,  # None → falls back to config signal.strategy
     )
 
     if args.once:

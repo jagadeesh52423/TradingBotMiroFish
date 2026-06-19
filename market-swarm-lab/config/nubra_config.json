@@ -27,6 +27,7 @@
     "max_horizon_days": null
   },
   "signal": {
+    "strategy": "blended",
     "confidence_weights": {
       "no_nse": {"tf": 0.6, "sim": 0.4},
       "with_nse": {"tf": 0.5, "sim": 0.3, "nse": 0.2}
@@ -36,7 +37,17 @@
       "weak_confidence": 0.55
     },
     "min_confidence_threshold": 0.60,
-    "min_bars_for_signal": 10
+    "min_bars_for_signal": 10,
+    "news_only": {
+      "buy_threshold": 0.15,
+      "sell_threshold": -0.15,
+      "min_filings": 1,
+      "confidence_params": {
+        "score_weight": 0.7,
+        "filing_weight": 0.3,
+        "max_expected_filings": 5
+      }
+    }
   },
   "nse": {
     "lookback_days": 7,
