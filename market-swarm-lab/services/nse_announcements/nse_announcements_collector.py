@@ -35,13 +35,20 @@ _BROWSER_UA = (
 _REFERER = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
-_BULLISH_KW: frozenset[str] = frozenset({
+# Default keyword sets — richer than the original to catch common Indian-equity catalysts.
+# Both sets are config-overridable via config["nse"]["bullish_keywords"] / ["bearish_keywords"].
+_DEFAULT_BULLISH_KW: frozenset[str] = frozenset({
     "dividend", "bonus", "buyback", "acquisition", "profit", "growth",
     "order", "win", "upgrade", "record", "earnings", "expansion",
+    "order win", "contract", "awarded", "successful bidder", "tbcb",
+    "approval", "approved", "launch", "stake", "record date",
+    "results", "partnership", "mou", "fund raise", "qip",
 })
-_BEARISH_KW: frozenset[str] = frozenset({
+_DEFAULT_BEARISH_KW: frozenset[str] = frozenset({
     "fine", "penalty", "default", "loss", "fraud", "investigation",
     "downgrade", "delay", "insolvency", "restructur", "litigation", "adverse",
+    "probe", "resignation", "recall", "strike", "lower guidance",
+    "rating downgrade",
 })
 
 _CACHE_TTL_SECONDS = 900  # 15 minutes — announcements are slow-changing
@@ -55,12 +62,29 @@ class NseAnnouncementsCollector:
         session: requests.Session | None = None,
         lookback_days: int = 7,
         cache_ttl_seconds: int = _CACHE_TTL_SECONDS,
+        bullish_keywords: frozenset[str] | None = None,
+        bearish_keywords: frozenset[str] | None = None,
     ) -> None:
         self._session = session
         self._lookback_days = lookback_days
         self._cache_ttl = cache_ttl_seconds
         self._primed = False
         self._cache: dict[str, tuple[list[dict], float]] = {}  # symbol → (items, expiry)
+        self._bullish_kw = bullish_keywords if bullish_keywords is not None else _DEFAULT_BULLISH_KW
+        self._bearish_kw = bearish_keywords if bearish_keywords is not None else _DEFAULT_BEARISH_KW
+
+    @classmethod
+    def from_config(cls, config: dict) -> "NseAnnouncementsCollector":
+        """Construct from the top-level nubra_config dict (reads nse sub-section)."""
+        nse_cfg = config.get("nse", {})
+        raw_bull = nse_cfg.get("bullish_keywords")
+        raw_bear = nse_cfg.get("bearish_keywords")
+        return cls(
+            lookback_days=int(nse_cfg.get("lookback_days", 7)),
+            cache_ttl_seconds=int(nse_cfg.get("cache_ttl_seconds", _CACHE_TTL_SECONDS)),
+            bullish_keywords=frozenset(raw_bull) if raw_bull is not None else None,
+            bearish_keywords=frozenset(raw_bear) if raw_bear is not None else None,
+        )
 
     # ------------------------------------------------------------------ public
 
@@ -79,7 +103,7 @@ class NseAnnouncementsCollector:
                 items = self._load_fixture(symbol)
                 provider_mode = "fixture_fallback"
 
-        sentiment_score = _score_sentiment(items)
+        sentiment_score = _score_sentiment(items, self._bullish_kw, self._bearish_kw)
         if sentiment_score > 0.1:
             sentiment_label = "bullish"
         elif sentiment_score < -0.1:
@@ -158,13 +182,21 @@ class NseAnnouncementsCollector:
 
 # -------------------------------------------------------------------- helpers
 
-def _score_sentiment(items: list[dict]) -> float:
-    """Keyword-based sentiment over announcement texts; clamped to [-1, 1]."""
+def _score_sentiment(
+    items: list[dict],
+    bullish_kw: frozenset[str] = _DEFAULT_BULLISH_KW,
+    bearish_kw: frozenset[str] = _DEFAULT_BEARISH_KW,
+) -> float:
+    """Keyword-based sentiment over announcement texts; clamped to [-1, 1].
+
+    Multi-word phrases (e.g. "successful bidder") match as substrings of the lowercased
+    text, so single-word and phrase keywords work identically.
+    """
     if not items:
         return 0.0
     score = 0.0
     for item in items:
         text = (item.get("attchmntText") or "").lower()
-        score += sum(0.1 for kw in _BULLISH_KW if kw in text)
-        score -= sum(0.1 for kw in _BEARISH_KW if kw in text)
+        score += sum(0.1 for kw in bullish_kw if kw in text)
+        score -= sum(0.1 for kw in bearish_kw if kw in text)
     return max(-1.0, min(1.0, round(score, 4)))
