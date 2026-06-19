@@ -795,6 +795,150 @@ class TestEnhancedKeywordScorer:
 
 
 # ---------------------------------------------------------------------------
+# Strategy capability properties (OCP — runner reads these, not strategy names)
+# ---------------------------------------------------------------------------
+
+class TestStrategyCapabilities:
+    def test_blended_requires_price_history(self):
+        assert get_strategy("blended", {}).requires_price_history is True
+
+    def test_blended_uses_forecast(self):
+        assert get_strategy("blended", {}).uses_forecast is True
+
+    def test_news_only_does_not_require_price_history(self):
+        assert get_strategy("news_only", {}).requires_price_history is False
+
+    def test_news_only_does_not_use_forecast(self):
+        assert get_strategy("news_only", {}).uses_forecast is False
+
+    def test_abc_defaults_are_true(self):
+        # ABC defaults guard new strategies so they must opt out explicitly.
+        assert SignalStrategy.requires_price_history is True
+        assert SignalStrategy.uses_forecast is True
+
+
+# ---------------------------------------------------------------------------
+# NewsOnlySignalStrategy — per-symbol upside gate (#3)
+# ---------------------------------------------------------------------------
+
+class TestNewsOnlyPerSymbolUpside:
+    def test_per_symbol_overrides_global(self):
+        cfg = _cfg_with_news_only()
+        cfg["entry_threshold"]["per_symbol"] = {"SBIN": 5.0}
+        strategy = get_strategy("news_only", cfg)
+        signal = strategy.build("SBIN", {}, None, None, _nse(0.4))
+        assert signal["expected_move_pct"] == pytest.approx(0.05)
+
+    def test_global_wins_when_per_symbol_is_lower(self):
+        cfg = _cfg_with_news_only()
+        cfg["entry_threshold"]["min_expected_upside_pct"] = 3.0
+        cfg["entry_threshold"]["per_symbol"] = {"SBIN": 1.0}
+        strategy = get_strategy("news_only", cfg)
+        signal = strategy.build("SBIN", {}, None, None, _nse(0.4))
+        assert signal["expected_move_pct"] == pytest.approx(0.03)
+
+    def test_per_symbol_key_case_insensitive(self):
+        cfg = _cfg_with_news_only()
+        cfg["entry_threshold"]["per_symbol"] = {"sbin": 4.0}
+        strategy = get_strategy("news_only", cfg)
+        signal = strategy.build("SBIN", {}, None, None, _nse(0.4))
+        assert signal["expected_move_pct"] == pytest.approx(0.04)
+
+    def test_symbol_not_in_per_symbol_uses_global(self):
+        cfg = _cfg_with_news_only()
+        cfg["entry_threshold"]["min_expected_upside_pct"] = 2.5
+        cfg["entry_threshold"]["per_symbol"] = {"RELIANCE": 6.0}
+        strategy = get_strategy("news_only", cfg)
+        signal = strategy.build("SBIN", {}, None, None, _nse(0.4))
+        assert signal["expected_move_pct"] == pytest.approx(0.025)
+
+    def test_call_clears_gate_at_per_symbol_threshold(self):
+        cfg = _cfg_with_news_only()
+        cfg["entry_threshold"]["per_symbol"] = {"SBIN": 4.0}
+        strategy = get_strategy("news_only", cfg)
+        signal = strategy.build("SBIN", {}, None, None, _nse(0.4))
+        gate = ExpectedUpsideGate({"min_expected_upside_pct": 4.0})
+        ok, reason = gate.evaluate(signal)
+        assert ok, f"Gate should pass at per-symbol threshold: {reason}"
+
+
+# ---------------------------------------------------------------------------
+# NSE scorer false-positive guards (#5)
+# Fail against old substring scorer; pass with word-boundary regex.
+# ---------------------------------------------------------------------------
+
+class TestScorerFalsePositiveGuards:
+    """Regression guards: direction-inverting false positives from old substring matching."""
+
+    def test_winding_up_is_not_bullish(self):
+        # Old: "win" in "winding" → bullish.  New: word boundary prevents it.
+        items = [{"attchmntText": "Winding up petition filed against the company."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score <= 0.0, f"'winding up' must not be bullish; got {score}"
+
+    def test_winding_up_scores_bearish(self):
+        # "winding up" is in bearish set.
+        items = [{"attchmntText": "Winding up petition filed against the company."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score < 0.0, f"'winding up' should score bearish; got {score}"
+
+    def test_company_name_fine_organics_is_not_bearish(self):
+        # Old: "fine" substring matched company name → bearish.
+        items = [{"attchmntText": "Fine Organics Industries Limited announces board meeting."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score >= 0.0, f"Company name 'Fine Organics' must not be bearish; got {score}"
+
+    def test_loss_of_share_certificate_is_not_bearish(self):
+        # Old: "loss" substring → bearish.  Admin filing, not financial loss.
+        items = [{"attchmntText": "Loss of share certificate notification as per SEBI requirements."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score >= 0.0, f"'loss of share certificate' must not be bearish; got {score}"
+
+    def test_esop_strike_price_is_not_bearish(self):
+        # Old: "strike" → bearish.  ESOP strike price is neutral/positive.
+        items = [{"attchmntText": "ESOP grant at a strike price of Rs 250 per share."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score >= 0.0, f"'strike price' (ESOP) must not be bearish; got {score}"
+
+    def test_in_order_to_is_not_bullish(self):
+        # Old: "order" in "in order to" → bullish.
+        items = [{"attchmntText": "In order to comply with SEBI regulations the company discloses."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score <= 0.0, f"'in order to' must not be bullish; got {score}"
+
+    def test_stakeholder_committee_is_not_bullish(self):
+        # Old: "stake" in "stakeholder" → bullish.  Word boundary guards it.
+        items = [{"attchmntText": "Stakeholder consultation committee meeting scheduled."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score <= 0.0, f"'Stakeholder committee' must not be bullish; got {score}"
+
+    def test_net_loss_scores_bearish(self):
+        items = [{"attchmntText": "Company reports net loss of Rs 150 crore in Q3FY26."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score < 0.0, f"'net loss' should be bearish; got {score}"
+
+    def test_going_concern_scores_bearish(self):
+        items = [{"attchmntText": "Auditors raised going concern doubt in the annual report."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score < 0.0, f"'going concern' should be bearish; got {score}"
+
+    def test_restructuring_scores_bearish(self):
+        items = [{"attchmntText": "Company announces debt restructuring plan with lenders."}]
+        score = _score_sentiment(items, _DEFAULT_BULLISH_KW, _DEFAULT_BEARISH_KW)
+        assert score < 0.0, f"'restructuring' should be bearish; got {score}"
+
+    def test_standalone_win_matches_but_winding_does_not(self):
+        # Word boundary: "win" matches standalone "win" but NOT "winding".
+        kw = frozenset({"win"})
+        assert _score_sentiment(
+            [{"attchmntText": "Company celebrates a big win."}], kw, frozenset()
+        ) > 0.0, "standalone 'win' should match"
+        assert _score_sentiment(
+            [{"attchmntText": "Winding up petition."}], kw, frozenset()
+        ) == 0.0, "'win' must NOT match inside 'winding'"
+
+
+# ---------------------------------------------------------------------------
 # _extract_subjects helper
 # ---------------------------------------------------------------------------
 
