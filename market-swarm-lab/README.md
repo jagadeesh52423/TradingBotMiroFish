@@ -402,6 +402,77 @@ T1 (70%): $900.90  T2 (30%): $911.56
 
 ---
 
+## Nubra UAT Equity Bot (Nifty 50)
+
+Runs the MiroFish agent pipeline against **Nubra (Indian broker) UAT** for **48 NSE cash equities** (Nifty-50 names available in UAT). Per symbol it pulls Nubra OHLCV + live **NSE corporate filings**, forecasts (TimesFM), runs the agent simulation, and produces a BUY/HOLD recommendation gated by a configurable minimum-upside rule. Long-only (CNC). Order execution is wired but requires UAT margin (provisioned by Nubra — there is no add-funds API).
+
+> Use **`python3.11`** — the test/runtime interpreter that has the deps. The default `python`/`python3` may be 2.7 / a venv without them.
+
+### One-time setup
+
+```bash
+cd market-swarm-lab
+
+# 1. Install the Nubra SDK (published on TestPyPI) + deps
+python3.11 -m pip install -i https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple nubra-sdk filelock
+
+# 2. Put your Nubra UAT credentials in market-swarm-lab/.env  (gitignored — never commit)
+#    PHONE_NO=<registered mobile>     # bare name — this is what the SDK reads
+#    MPIN=<your mpin>
+#    NUBRA_ENV=UAT
+```
+
+### Log in (interactive OTP — run in a real terminal, ~weekly)
+
+```bash
+cd market-swarm-lab
+python3.11 scripts/nubra_login.py        # sends an SMS OTP, prompts for it; caches the session
+```
+
+The script reports real success/failure. The session is cached in `auth_data.db` (gitignored) and reused until it expires (~7 days).
+
+### See the recommendations (dry-run — read-only, no orders)
+
+```bash
+cd market-swarm-lab
+python3.11 scripts/run_nubra_equity.py --once --dry-run
+```
+
+Prints, per symbol: trade (CALL/PUT/HOLD), modeled move %, confidence, NSE-news sentiment, and the would-place set. **No orders are placed and no funds are needed.**
+
+### Live / scheduled
+
+```bash
+python3.11 scripts/run_nubra_equity.py --once          # one live pass (places orders if account funded)
+python3.11 scripts/run_nubra_equity.py --interval 3600 # loop every hour
+```
+
+> ⚠️ Live order placement requires margin in the UAT account (it ships at ₹0, so BUYs are safely blocked). UAT funds are provisioned by Nubra — email **support@nubra.io**; there is no self-service / API add-funds path.
+
+### Configuration — `config/nubra_config.json` (no code changes)
+
+| Key | Purpose |
+|---|---|
+| `whitelist` | Tradeable symbols (single source of truth for data + execution). Add/remove = one line. |
+| `entry_threshold.min_expected_upside_pct` | Minimum modeled upside to enter (default `2.0`), `per_symbol` overrides, `max_horizon_days`. |
+| `signal.confidence_weights` | Blend of TimesFM / agent-sim / NSE-news; `news_override`; `min_bars_for_signal` (skip thin history). |
+| `max_trades_per_day` | Daily order cap (default `5`). |
+
+### Upgrade the signal quality (config toggles, no code)
+
+By default TimesFM and MiroFish run in **local fallback** (a linear forecast + a formula sim). To activate the real models:
+
+```bash
+# .env
+ENABLE_TIMESFM=true            # neural TimesFM (requires its venv built)
+MIROFISH_BASE_URL=<server url> # the real 100-agent LLM swarm (reads the NSE filing text)
+```
+
+See [`docs/superpowers/specs/2026-06-16-nubra-uat-integration-design.md`](docs/superpowers/specs/2026-06-16-nubra-uat-integration-design.md) for the full design.
+
+---
+
 ## License
 
 MIT
