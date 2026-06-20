@@ -13,6 +13,10 @@ __pycache__/
 auth_data.db
 auth_data.db.*
 
+# Fyers SDK log files (written to cwd at runtime)
+fyersApi.log
+fyersRequests.log
+
 # State & artifacts
 state/reports/*.json
 state/reports/*.md
