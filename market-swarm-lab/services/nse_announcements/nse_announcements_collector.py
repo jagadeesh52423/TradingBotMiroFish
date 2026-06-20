@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -35,13 +36,23 @@ _BROWSER_UA = (
 _REFERER = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
 _FIXTURE_DIR = Path(__file__).parent / "fixtures"
 
-_BULLISH_KW: frozenset[str] = frozenset({
+# Default keyword sets — config-overridable via config["nse"]["bullish_keywords"] / ["bearish_keywords"].
+# Phrases: matched with word-boundary regex, so single-word stems like "win", "order", "stake"
+# are intentionally omitted — they caused false positives ("winding up"→bullish, "in order to"→bullish,
+# "stakeholder"→bullish).  Use specific phrases instead.
+_DEFAULT_BULLISH_KW: frozenset[str] = frozenset({
     "dividend", "bonus", "buyback", "acquisition", "profit", "growth",
-    "order", "win", "upgrade", "record", "earnings", "expansion",
+    "upgrade", "earnings", "expansion",
+    "order win", "wins contract", "bags order", "new order",
+    "contract", "awarded", "successful bidder", "tbcb",
+    "approval", "approved", "launch", "record date",
+    "partnership", "mou", "fund raise", "qip",
 })
-_BEARISH_KW: frozenset[str] = frozenset({
-    "fine", "penalty", "default", "loss", "fraud", "investigation",
-    "downgrade", "delay", "insolvency", "restructur", "litigation", "adverse",
+_DEFAULT_BEARISH_KW: frozenset[str] = frozenset({
+    "penalty", "fraud", "investigation", "downgrade",
+    "insolvency", "restructuring", "restructured", "litigation", "adverse",
+    "probe", "resignation", "recall", "lower guidance",
+    "rating downgrade", "winding up", "net loss", "going concern",
 })
 
 _CACHE_TTL_SECONDS = 900  # 15 minutes — announcements are slow-changing
@@ -55,12 +66,41 @@ class NseAnnouncementsCollector:
         session: requests.Session | None = None,
         lookback_days: int = 7,
         cache_ttl_seconds: int = _CACHE_TTL_SECONDS,
+        bullish_keywords: frozenset[str] | None = None,
+        bearish_keywords: frozenset[str] | None = None,
+        analyzer: "SentimentAnalyzer | None" = None,
     ) -> None:
         self._session = session
         self._lookback_days = lookback_days
         self._cache_ttl = cache_ttl_seconds
         self._primed = False
         self._cache: dict[str, tuple[list[dict], float]] = {}  # symbol → (items, expiry)
+        self._bullish_kw = bullish_keywords if bullish_keywords is not None else _DEFAULT_BULLISH_KW
+        self._bearish_kw = bearish_keywords if bearish_keywords is not None else _DEFAULT_BEARISH_KW
+        if analyzer is None:
+            # Default preserves today's behavior exactly: keyword scoring with this
+            # collector's keyword sets. Local import avoids a module-load cycle
+            # (sentiment_analyzer imports _score_sentiment from this module).
+            from services.nse_announcements.sentiment_analyzer import KeywordSentimentAnalyzer
+            analyzer = KeywordSentimentAnalyzer(self._bullish_kw, self._bearish_kw)
+        self._analyzer = analyzer
+
+    @classmethod
+    def from_config(cls, config: dict) -> "NseAnnouncementsCollector":
+        """Construct from the top-level nubra_config dict (reads nse sub-section)."""
+        from services.nse_announcements.sentiment_analyzer import get_analyzer
+
+        nse_cfg = config.get("nse", {})
+        raw_bull = nse_cfg.get("bullish_keywords")
+        raw_bear = nse_cfg.get("bearish_keywords")
+        engine = nse_cfg.get("sentiment_engine", "keyword")
+        return cls(
+            lookback_days=int(nse_cfg.get("lookback_days", 7)),
+            cache_ttl_seconds=int(nse_cfg.get("cache_ttl_seconds", _CACHE_TTL_SECONDS)),
+            bullish_keywords=frozenset(raw_bull) if raw_bull is not None else None,
+            bearish_keywords=frozenset(raw_bear) if raw_bear is not None else None,
+            analyzer=get_analyzer(engine, config),
+        )
 
     # ------------------------------------------------------------------ public
 
@@ -79,13 +119,7 @@ class NseAnnouncementsCollector:
                 items = self._load_fixture(symbol)
                 provider_mode = "fixture_fallback"
 
-        sentiment_score = _score_sentiment(items)
-        if sentiment_score > 0.1:
-            sentiment_label = "bullish"
-        elif sentiment_score < -0.1:
-            sentiment_label = "bearish"
-        else:
-            sentiment_label = "neutral"
+        result = self._analyzer.analyze(items)
 
         return {
             "symbol": symbol,
@@ -96,12 +130,17 @@ class NseAnnouncementsCollector:
                 for item in items
                 if item.get("attchmntText")
             ],
-            "sentiment_score": round(sentiment_score, 4),
-            "sentiment_label": sentiment_label,
+            "sentiment_score": round(result.sentiment_score, 4),
+            "sentiment_label": result.sentiment_label,
+            "sentiment_confidence": round(result.confidence, 4),
+            "sentiment_reasoning": result.reasoning,
+            "sentiment_engine": result.engine,
             "source_audit": {
                 "nse_announcements": {
                     "status": "live" if provider_mode == "nse_live" else "fallback",
                     "count": len(items),
+                    "engine": result.engine,
+                    "degraded": result.degraded,
                 }
             },
         }
@@ -158,13 +197,28 @@ class NseAnnouncementsCollector:
 
 # -------------------------------------------------------------------- helpers
 
-def _score_sentiment(items: list[dict]) -> float:
-    """Keyword-based sentiment over announcement texts; clamped to [-1, 1]."""
+def _score_sentiment(
+    items: list[dict],
+    bullish_kw: frozenset[str] = _DEFAULT_BULLISH_KW,
+    bearish_kw: frozenset[str] = _DEFAULT_BEARISH_KW,
+) -> float:
+    """Keyword-based sentiment over announcement texts; clamped to [-1, 1].
+
+    Uses word-boundary regex so "win" doesn't match "winding up" and
+    "stake" doesn't match "stakeholder".  Multi-word phrases (e.g. "order win")
+    are matched as exact phrases, also guarded by word boundaries.
+    """
     if not items:
         return 0.0
     score = 0.0
     for item in items:
         text = (item.get("attchmntText") or "").lower()
-        score += sum(0.1 for kw in _BULLISH_KW if kw in text)
-        score -= sum(0.1 for kw in _BEARISH_KW if kw in text)
+        score += sum(
+            0.1 for kw in bullish_kw
+            if re.search(r"\b" + re.escape(kw) + r"\b", text)
+        )
+        score -= sum(
+            0.1 for kw in bearish_kw
+            if re.search(r"\b" + re.escape(kw) + r"\b", text)
+        )
     return max(-1.0, min(1.0, round(score, 4)))
