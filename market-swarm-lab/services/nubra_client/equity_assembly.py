@@ -16,6 +16,8 @@ from decimal import Decimal
 from typing import Callable
 
 from services.nubra_client.equity_order_handler import EquityOrderHandler
+from services.nubra_client.market_data_provider import MarketDataProvider
+from services.nubra_client.market_data_registry import get_provider
 from services.nubra_client.nubra_feed_adapter import NubraFeedAdapter
 from services.nubra_client.order_handler import OrderHandlerRegistry
 from services.nubra_client.order_state_tracker import OrderStateTracker
@@ -45,6 +47,7 @@ def build_equity_stack(
     *,
     ltp_provider: Callable[[str], Decimal] | None = None,
     client_factory: Callable | None = None,
+    data_provider: MarketDataProvider | None = None,
     state_dir: str = "state/nubra",
 ) -> EquityStack:
     """Build the full equity stack wired for *mode*.
@@ -55,6 +58,9 @@ def build_equity_stack(
         ltp_provider:   Override LTP callable for paper mode (e.g. in tests).
         client_factory: Override NubraClient factory for nubra_uat mode (seam for tests).
                         Signature: (config: dict) -> NubraClient-like object.
+        data_provider:  Override market-data provider for nubra_uat mode. When None,
+                        resolved from config["data_provider"] (default "nubra").
+                        Orders always stay on Nubra; only market data switches.
         state_dir:      Base directory for OrderStateTracker persistence.
     """
     if config is None:
@@ -70,7 +76,7 @@ def build_equity_stack(
         broker, feed, effective_ltp, funds_check, market_data = _paper_components(ltp_provider)
     elif mode == "nubra_uat":
         broker, feed, effective_ltp, funds_check, market_data = _nubra_uat_components(
-            config, whitelist, client_factory=client_factory
+            config, whitelist, client_factory=client_factory, data_provider=data_provider
         )
     else:
         raise ValueError(f"Unknown equity mode: {mode!r}. Expected 'paper' or 'nubra_uat'.")
@@ -108,17 +114,33 @@ def _paper_components(ltp_override: Callable | None):
     return broker, None, ltp, lambda order: True, None  # no live market-data client in paper mode
 
 
-def _nubra_uat_components(config: dict, whitelist: list[str], *, client_factory: Callable | None):
+def _nubra_uat_components(
+    config: dict,
+    whitelist: list[str],
+    *,
+    client_factory: Callable | None,
+    data_provider: MarketDataProvider | None = None,
+):
     from services.nubra_client.nubra_client import NubraClient
     from services.nubra_client.nubra_broker import NubraBroker
     # client_factory seam: allows unit tests to inject a fake without the live SDK.
     factory = client_factory or NubraClient.from_session
     nubra_client = factory(config)
+    # Orders ALWAYS stay on Nubra: broker, feed, funds all use the NubraClient.
     broker = NubraBroker(nubra_client)
     feed = NubraFeedAdapter(nubra_client, symbols=whitelist)
     funds_check = PositionSync(broker).funds_sufficient
-    # market_data = the raw NubraClient, NOT the broker — broker lacks current_price/historical.
-    return broker, feed, nubra_client.current_price, funds_check, nubra_client
+
+    # Market data + effective LTP move together to the chosen provider (coupled).
+    # Default "nubra" reuses the same client (preserves client_factory seam, no double session).
+    provider_name = config.get("data_provider", "nubra")
+    if data_provider is not None:
+        market_data = data_provider
+    elif provider_name == "nubra":
+        market_data = nubra_client
+    else:
+        market_data = get_provider(provider_name, config)
+    return broker, feed, market_data.current_price, funds_check, market_data
 
 
 def _account_from_funds(broker, mode: str) -> Decimal:

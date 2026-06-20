@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 from services.nubra_client.instrument_resolver import InstrumentResolver
+from services.nubra_client.market_data_provider import MarketDataProvider
+from services.nubra_client.market_data_registry import register_provider
 from services.nubra_client.units import paise_to_rupees, round_to_tick, rupees_to_paise
 
 _SIDE = {"BUY": "ORDER_SIDE_BUY", "SELL": "ORDER_SIDE_SELL"}
@@ -10,8 +12,17 @@ _SIDE = {"BUY": "ORDER_SIDE_BUY", "SELL": "ORDER_SIDE_SELL"}
 _PRODUCT = {"CNC": "ORDER_DELIVERY_TYPE_CNC", "IDAY": "ORDER_DELIVERY_TYPE_IDAY"}
 
 
-class NubraClient:
-    """Only module that imports nubra_sdk. Tests inject fake sdk_* handles."""
+@register_provider("nubra")
+class NubraClient(MarketDataProvider):
+    """Only module that imports nubra_sdk. Tests inject fake sdk_* handles.
+
+    Also the default MarketDataProvider ("nubra") — current_price + historical
+    satisfy the ABC with no behaviour change.
+    """
+
+    @classmethod
+    def from_config(cls, config: dict) -> "NubraClient":
+        return cls.from_session(config)
 
     def __init__(self, config: dict, sdk_trader, sdk_market, sdk_instruments,
                  sdk_portfolio=None) -> None:
