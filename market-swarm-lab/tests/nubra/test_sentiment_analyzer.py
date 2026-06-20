@@ -5,10 +5,11 @@ mocked. (BP-123 — never weaken a test to match a stub)
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from services.nse_announcements import sentiment_analyzer as sa
 from services.nse_announcements.sentiment_analyzer import (
     AiSentimentAnalyzer,
     KeywordSentimentAnalyzer,
@@ -240,3 +241,103 @@ class TestSentimentResult:
     def test_degraded_defaults_false(self):
         r = SentimentResult(0.0, "neutral", 0.0, "x", "keyword")
         assert r.degraded is False
+
+
+# ---------------------------------------------------------------------------
+# 8. AiSentimentAnalyzer — LiteLLM proxy (Bearer auth_token + base_url) wiring
+# ---------------------------------------------------------------------------
+
+_ANTHROPIC_ENV = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+)
+
+
+def _hermetic_env(monkeypatch, **values: str) -> None:
+    """Clear all ANTHROPIC_* vars, set only the given ones, and stub .env loading."""
+    for key in _ANTHROPIC_ENV:
+        monkeypatch.delenv(key, raising=False)
+    for key, val in values.items():
+        monkeypatch.setenv(key, val)
+    monkeypatch.setattr(sa, "_load_dotenv_quietly", lambda: None)
+
+
+class TestAiAnalyzerLiteLLM:
+    def test_auth_token_path_builds_bearer_client(self, monkeypatch):
+        _hermetic_env(
+            monkeypatch,
+            ANTHROPIC_AUTH_TOKEN="bearer-xyz",
+            ANTHROPIC_BASE_URL="http://proxy.example",
+        )
+        analyzer = AiSentimentAnalyzer.from_config(
+            {"nse": {"ai_model": "claude-sonnet-4-5-20250929"}}
+        )
+
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = _tool_use_response(0.5, 0.8, "ok")
+        with patch("anthropic.Anthropic", return_value=fake_client) as ctor:
+            result = analyzer.analyze([{"attchmntText": "The board approved the buyback."}])
+
+        assert result.engine == "ai"
+        assert result.degraded is False
+        _, ctor_kwargs = ctor.call_args
+        assert ctor_kwargs == {"base_url": "http://proxy.example", "auth_token": "bearer-xyz"}
+        assert "api_key" not in ctor_kwargs
+        _, create_kwargs = fake_client.messages.create.call_args
+        assert create_kwargs["model"] == "claude-sonnet-4-5-20250929"
+
+    def test_env_model_overrides_config(self, monkeypatch):
+        _hermetic_env(
+            monkeypatch,
+            ANTHROPIC_AUTH_TOKEN="bearer-xyz",
+            ANTHROPIC_MODEL="proxy-model-from-env",
+        )
+        analyzer = AiSentimentAnalyzer.from_config({"nse": {"ai_model": "config-model"}})
+        assert analyzer._model == "proxy-model-from-env"
+
+    def test_auth_token_preferred_when_both_present(self, monkeypatch):
+        _hermetic_env(
+            monkeypatch,
+            ANTHROPIC_API_KEY="sk-test",
+            ANTHROPIC_AUTH_TOKEN="bearer-xyz",
+            ANTHROPIC_BASE_URL="http://proxy.example",
+        )
+        analyzer = AiSentimentAnalyzer.from_config({"nse": {}})
+
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = _tool_use_response(0.1, 0.5, "ok")
+        with patch("anthropic.Anthropic", return_value=fake_client) as ctor:
+            analyzer.analyze([{"attchmntText": "buyback approved"}])
+
+        _, ctor_kwargs = ctor.call_args
+        assert ctor_kwargs["auth_token"] == "bearer-xyz"
+        assert "api_key" not in ctor_kwargs
+
+    def test_api_key_only_back_compat(self, monkeypatch):
+        _hermetic_env(monkeypatch, ANTHROPIC_API_KEY="sk-test")
+        analyzer = AiSentimentAnalyzer.from_config({"nse": {"ai_model": "claude-haiku-4-5"}})
+
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = _tool_use_response(0.3, 0.6, "ok")
+        with patch("anthropic.Anthropic", return_value=fake_client) as ctor:
+            result = analyzer.analyze([{"attchmntText": "profit growth dividend"}])
+
+        assert result.engine == "ai"
+        assert result.degraded is False
+        _, ctor_kwargs = ctor.call_args
+        assert ctor_kwargs == {"api_key": "sk-test"}
+        assert "base_url" not in ctor_kwargs
+        assert "auth_token" not in ctor_kwargs
+
+    def test_no_credential_degrades_without_client(self, monkeypatch):
+        _hermetic_env(monkeypatch)  # neither api_key nor auth_token
+        analyzer = AiSentimentAnalyzer.from_config({"nse": {}})
+
+        with patch("anthropic.Anthropic") as ctor:
+            result = analyzer.analyze([{"attchmntText": "profit growth dividend"}])
+
+        assert result.engine == "keyword"
+        assert result.degraded is True
+        ctor.assert_not_called()

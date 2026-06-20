@@ -154,10 +154,14 @@ class AiSentimentAnalyzer(SentimentAnalyzer):
         fallback: KeywordSentimentAnalyzer,
         model: str = _AI_MODEL_DEFAULT,
         api_key: str | None = None,
+        auth_token: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         self._fallback = fallback
         self._model = model
         self._api_key = api_key
+        self._auth_token = auth_token
+        self._base_url = base_url
         self._client = None
         self._logged_no_key = False
 
@@ -165,13 +169,24 @@ class AiSentimentAnalyzer(SentimentAnalyzer):
     def from_config(cls, config: dict) -> "AiSentimentAnalyzer":
         _load_dotenv_quietly()
         fallback = KeywordSentimentAnalyzer.from_config(config)
-        model = config.get("nse", {}).get("ai_model", _AI_MODEL_DEFAULT)
-        return cls(fallback, model, os.environ.get("ANTHROPIC_API_KEY"))
+        # env (proxy model) wins over config, which wins over the built-in default.
+        model = (
+            os.environ.get("ANTHROPIC_MODEL")
+            or config.get("nse", {}).get("ai_model")
+            or _AI_MODEL_DEFAULT
+        )
+        return cls(
+            fallback,
+            model,
+            api_key=os.environ.get("ANTHROPIC_API_KEY"),
+            auth_token=os.environ.get("ANTHROPIC_AUTH_TOKEN"),
+            base_url=os.environ.get("ANTHROPIC_BASE_URL"),
+        )
 
     def analyze(self, items: list[dict]) -> SentimentResult:
-        if not self._api_key:
+        if not (self._api_key or self._auth_token):
             if not self._logged_no_key:
-                _log.info("ANTHROPIC_API_KEY absent — AI sentiment degraded to keyword")
+                _log.info("no ANTHROPIC_API_KEY/ANTHROPIC_AUTH_TOKEN — AI sentiment degraded to keyword")
                 self._logged_no_key = True
             return self._degraded(items)
 
@@ -222,7 +237,15 @@ class AiSentimentAnalyzer(SentimentAnalyzer):
     def _get_client(self):
         if self._client is None:
             import anthropic
-            self._client = anthropic.Anthropic(api_key=self._api_key)
+            kwargs: dict = {}
+            if self._base_url:
+                kwargs["base_url"] = self._base_url
+            # Prefer Bearer (auth_token) — that's what the LiteLLM proxy wants.
+            if self._auth_token:
+                kwargs["auth_token"] = self._auth_token
+            elif self._api_key:
+                kwargs["api_key"] = self._api_key
+            self._client = anthropic.Anthropic(**kwargs)
         return self._client
 
 
