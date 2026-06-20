@@ -51,6 +51,11 @@ from services.nubra_client.entry_gate import ExpectedUpsideGate
 from services.nubra_client.equity_assembly import build_equity_stack
 from services.nubra_client.equity_context_builder import build_equity_context
 from services.nubra_client.signal_strategies import _REGISTRY, get_strategy
+from services.nubra_client.universe_registry import (
+    _UNIVERSE_REGISTRY,
+    get_universe,
+    load_universes_from_config,
+)
 from services.forecasting.forecasting_service import TimesFMForecastingService
 
 # Derived from the strategy registry so new strategies appear in --help automatically.
@@ -322,9 +327,34 @@ def _load_config(path: pathlib.Path = _CONFIG_PATH) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _resolve_whitelist(config: dict, universe_override: str | None) -> list[str]:
+    """Resolve the active symbol list and mutate config["whitelist"] in place.
+
+    Precedence: --universe flag > config["universe"] > legacy config["whitelist"].
+    Mutating in place keeps both consumers (build_equity_stack + NubraEquityRunner,
+    which each read config["whitelist"]) in sync from a single source of truth.
+    """
+    name = universe_override or config.get("universe")
+    resolved = get_universe(name) if name else config["whitelist"]
+    config["whitelist"] = resolved
+    return resolved
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+def _preparse_config_path(argv=None) -> pathlib.Path:
+    """Extract --config before the main parse so universes load before argparse.
+
+    The --universe choices come from the registry, which is populated from the
+    config's "universes" map — so the config path must be known first.
+    """
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", default=str(_CONFIG_PATH))
+    known, _ = pre.parse_known_args(argv)
+    return pathlib.Path(known.config)
+
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Nubra equity signal runner")
@@ -342,17 +372,26 @@ def _parse_args(argv=None):
         default=None,
         help="Signal strategy override (default: read from config signal.strategy)",
     )
+    parser.add_argument(
+        "--universe",
+        choices=sorted(_UNIVERSE_REGISTRY),
+        default=None,
+        help="Universe override (default: read from config universe / whitelist)",
+    )
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> None:
+    # Load config + universes BEFORE argparse so --universe choices are populated.
+    config = _load_config(_preparse_config_path(argv))
+    load_universes_from_config(config)
     args = _parse_args(argv)
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    config = _load_config(pathlib.Path(args.config))
+    _resolve_whitelist(config, args.universe)
     stack = build_equity_stack("nubra_uat", config)
     runner = NubraEquityRunner(
         config,
