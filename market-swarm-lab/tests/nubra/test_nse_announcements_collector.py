@@ -277,3 +277,91 @@ class TestSessionPriming:
         # Should still get live data via the API even though prime failed
         assert result["provider_mode"] == "nse_live"
         assert len(result["items"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Pluggable sentiment engine (analyzer) integration
+# ---------------------------------------------------------------------------
+
+class _FakeAnalyzer:
+    """Injectable analyzer returning a canned SentimentResult."""
+
+    def __init__(self, result):
+        self._result = result
+        self.calls = 0
+
+    def analyze(self, items):
+        self.calls += 1
+        return self._result
+
+
+class TestAnalyzerIntegration:
+    def test_default_collector_keyword_engine_unchanged(self):
+        """Spec case 9: default (no analyzer / no sentiment_engine) → keyword, existing keys intact."""
+        items = [{"attchmntText": "dividend bonus growth profit earnings record expansion acquisition"}]
+        sess = _fake_session(items)
+        collector = NseAnnouncementsCollector(session=sess)
+        result = collector.collect("SBIN")
+
+        assert result["sentiment_engine"] == "keyword"
+        assert result["sentiment_label"] == "bullish"
+        assert result["sentiment_score"] > 0.1
+        assert result["source_audit"]["nse_announcements"]["engine"] == "keyword"
+        assert result["source_audit"]["nse_announcements"]["degraded"] is False
+        # Existing keys preserved
+        for key in ("symbol", "provider_mode", "items", "documents",
+                    "sentiment_score", "sentiment_label", "source_audit"):
+            assert key in result
+
+    def test_injected_analyzer_additive_keys(self):
+        """Spec case 8: injected analyzer → additive keys + source_audit engine/degraded."""
+        from services.nse_announcements.sentiment_analyzer import SentimentResult
+
+        canned = SentimentResult(
+            sentiment_score=0.75,
+            sentiment_label="bullish",
+            confidence=0.9,
+            reasoning="AI says approved buyback is bullish",
+            engine="ai",
+            degraded=False,
+        )
+        analyzer = _FakeAnalyzer(canned)
+        items = [{"attchmntText": "The board approved the buyback."}]
+        sess = _fake_session(items)
+        collector = NseAnnouncementsCollector(session=sess, analyzer=analyzer)
+        result = collector.collect("SBIN")
+
+        assert analyzer.calls == 1
+        assert result["sentiment_score"] == 0.75
+        assert result["sentiment_label"] == "bullish"
+        assert result["sentiment_confidence"] == 0.9
+        assert result["sentiment_reasoning"] == "AI says approved buyback is bullish"
+        assert result["sentiment_engine"] == "ai"
+        assert result["source_audit"]["nse_announcements"]["engine"] == "ai"
+        assert result["source_audit"]["nse_announcements"]["degraded"] is False
+
+    def test_degraded_flag_surfaces_in_audit(self):
+        from services.nse_announcements.sentiment_analyzer import SentimentResult
+
+        canned = SentimentResult(0.2, "bullish", 0.2, "keyword fallback", "keyword", degraded=True)
+        analyzer = _FakeAnalyzer(canned)
+        sess = _fake_session([{"attchmntText": "profit"}])
+        collector = NseAnnouncementsCollector(session=sess, analyzer=analyzer)
+        result = collector.collect("SBIN")
+
+        assert result["sentiment_engine"] == "keyword"
+        assert result["source_audit"]["nse_announcements"]["degraded"] is True
+
+    def test_from_config_ai_engine_builds_collector(self):
+        """from_config with sentiment_engine='ai' wires an AiSentimentAnalyzer (no key needed to build)."""
+        from services.nse_announcements.sentiment_analyzer import AiSentimentAnalyzer
+
+        config = {"nse": {"sentiment_engine": "ai", "ai_model": "claude-haiku-4-5"}}
+        collector = NseAnnouncementsCollector.from_config(config)
+        assert isinstance(collector._analyzer, AiSentimentAnalyzer)
+
+    def test_from_config_default_engine_is_keyword(self):
+        from services.nse_announcements.sentiment_analyzer import KeywordSentimentAnalyzer
+
+        collector = NseAnnouncementsCollector.from_config({"nse": {}})
+        assert isinstance(collector._analyzer, KeywordSentimentAnalyzer)

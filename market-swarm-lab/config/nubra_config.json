@@ -51,7 +51,9 @@
   },
   "nse": {
     "lookback_days": 7,
-    "cache_ttl_seconds": 900
+    "cache_ttl_seconds": 900,
+    "sentiment_engine": "keyword",
+    "ai_model": "claude-haiku-4-5"
   },
   "runner": {
     "max_workers": 3,
