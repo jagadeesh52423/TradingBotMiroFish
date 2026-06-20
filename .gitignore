@@ -14,3 +14,5 @@ state/
 data/
 node_modules/
 .openclaw/
+.claire/
+.claude/superpowers/
