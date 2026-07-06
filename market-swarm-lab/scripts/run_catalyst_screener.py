@@ -54,7 +54,7 @@ def _screen_symbols(universe_spec: str, whitelist: list[str]) -> list[str] | Non
     return [sym.strip().upper() for sym in universe_spec.split(",") if sym.strip()]
 
 
-def run(universe_spec: str = "market") -> list[dict]:
+def run(universe_spec: str = "market") -> tuple[list[dict], tuple[int, int]]:
     config = json.loads(_CONFIG_PATH.read_text())
     whitelist = config.get("whitelist", [])
     collector = NseEventCalendarCollector.from_config(config)
@@ -70,13 +70,17 @@ def run(universe_spec: str = "market") -> list[dict]:
     regime_universe = config.get("catalyst_screener", {}).get("regime_universe", "midcap150")
     breadth_symbols = config.get("universes", {}).get(regime_universe) or whitelist
     screener = CatalystScreener(YFinancePriceSource(), breadth_symbols, ScreenerConfig.from_config(config))
-    return [candidate.to_row() for candidate in screener.screen(events)]
+    rows = [candidate.to_row() for candidate in screener.screen(events)]
+    return rows, screener.regime_coverage()
 
 
-def _print_report(rows: list[dict], universe_spec: str = "market") -> None:
+def _print_report(rows: list[dict], universe_spec: str = "market",
+                  regime_coverage: tuple[int, int] | None = None) -> None:
     print("=" * 90)
     print("NSE CATALYST MEAN-REVERSION SCREENER — EXPLORATORY / research, NOT investment advice.")
     print(f"Universe: {universe_spec}. Daily-close only: no pre-open gap, no 15-min confirm, no circuit modeling.")
+    if regime_coverage:
+        print(f"Regime breadth index built from {regime_coverage[0]}/{regime_coverage[1]} universe symbols resolved.")
     print("=" * 90)
     if not rows:
         print(f"\nNo candidates (no recent '{universe_spec}' catalyst passed exclude-earnings + liquid + below-MA).")
@@ -96,4 +100,5 @@ if __name__ == "__main__":
     _self_check()
     if "--self-check" not in sys.argv:
         universe_spec = _parse_universe(sys.argv)
-        _print_report(run(universe_spec), universe_spec)
+        rows, regime_coverage = run(universe_spec)
+        _print_report(rows, universe_spec, regime_coverage)

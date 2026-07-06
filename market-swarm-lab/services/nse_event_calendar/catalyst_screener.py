@@ -151,6 +151,7 @@ class CatalystScreener:
         self._cfg = config or ScreenerConfig()
         self._bars_cache: dict[str, list[dict]] = {}
         self._index: dict[date, float] | None = None
+        self._breadth_resolved = 0
 
     def _bars(self, symbol: str) -> list[dict]:
         if symbol not in self._bars_cache:
@@ -160,15 +161,26 @@ class CatalystScreener:
     def _breadth_index(self) -> dict[date, float]:
         if self._index is None:
             per_date: dict[date, list[float]] = {}
+            resolved = 0
             for symbol in self._universe:
                 bars = self._bars(symbol)
                 anchor = bars[0]["close"] if bars else 0.0
-                if not anchor:
+                if not anchor:  # unresolved/empty price source -> silently thins the proxy
                     continue
+                resolved += 1
                 for bar in bars:
                     per_date.setdefault(bar["date"], []).append(bar["close"] / anchor)
+            self._breadth_resolved = resolved
             self._index = {bar_date: mean(levels) for bar_date, levels in per_date.items() if levels}
+            total = len(self._universe)
+            _log.info("regime breadth index: %d/%d universe symbols resolved", resolved, total)
+            if total and resolved < 0.8 * total:
+                _log.warning("regime breadth proxy THIN: %d/%d resolved -> regime_ok less reliable", resolved, total)
         return self._index
+
+    def regime_coverage(self) -> tuple[int, int]:
+        self._breadth_index()
+        return self._breadth_resolved, len(self._universe)
 
     def _regime_ok(self, event_date: date) -> bool:
         index = self._breadth_index()
