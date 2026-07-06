@@ -122,6 +122,7 @@ def _pit_forecast(fc: TimesFMForecastingService, sym: str, closes_pit: list[floa
         "pred_ret": pred_ret,
         "confidence": round(float(result.get("confidence", 0.5)), 4),
         "direction": result.get("direction", "sideways"),
+        "provider_mode": result.get("provider_mode", "unknown"),
     }
 
 
@@ -156,9 +157,14 @@ def build_stage_a(version: str | None = None, symbols: list[str] | None = None) 
     # one-time build, so correctness beats parallelism here.
     fc = TimesFMForecastingService()
     ok: dict[str, dict] = {}
+    modes: set[str] = set()
     for sym, closes in fetched.items():
         n = len(closes)
-        forecasts = {str(t): _pit_forecast(fc, sym, closes[: t + 1]) for t in range(MIN_BARS, n - 1)}
+        forecasts = {}
+        for t in range(MIN_BARS, n - 1):
+            forecast = _pit_forecast(fc, sym, closes[: t + 1])
+            modes.add(forecast.pop("provider_mode"))  # audited in meta, not per-day (lean cache)
+            forecasts[str(t)] = forecast
         ok[sym] = {"closes": closes, "forecasts": forecasts}
 
     cache = {
@@ -166,6 +172,7 @@ def build_stage_a(version: str | None = None, symbols: list[str] | None = None) 
             "forecast_version": version,
             "forecast_horizon": FORECAST_HORIZON,
             "min_bars": MIN_BARS,
+            "provider_modes": sorted(modes),  # which forecaster actually ran (audit trail)
             "symbols_ok": sorted(ok),
             "symbols_failed": failed,
         },
