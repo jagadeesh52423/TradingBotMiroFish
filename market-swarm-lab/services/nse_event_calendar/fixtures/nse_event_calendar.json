@@ -1,0 +1,8 @@
+[
+  {"symbol": "RELIANCE", "company": "Reliance Industries Limited", "purpose": "Financial Results", "bm_desc": "To consider and approve the unaudited financial results for the quarter ended", "date": "15-Jul-2026"},
+  {"symbol": "TCS", "company": "Tata Consultancy Services Limited", "purpose": "Dividend", "bm_desc": "To consider and approve an interim dividend", "date": "12-Jul-2026"},
+  {"symbol": "INFY", "company": "Infosys Limited", "purpose": "Buy Back", "bm_desc": "To consider a proposal for buyback of equity shares", "date": "10-Jul-2026"},
+  {"symbol": "HDFCBANK", "company": "HDFC Bank Limited", "purpose": "Fund Raising", "bm_desc": "To consider raising of funds by way of bonds / NCD on private placement", "date": "09-Jul-2026"},
+  {"symbol": "SBIN", "company": "State Bank of India", "purpose": "Board Meeting", "bm_desc": "To consider general business and operational updates", "date": "08-Jul-2026"},
+  {"symbol": "ZOMATO", "company": "Zomato Limited", "purpose": "Financial Results", "bm_desc": "Quarterly results and audited accounts", "date": "11-Jul-2026"}
+]
