@@ -190,11 +190,11 @@ class CatalystScreener:
             if metrics is None:
                 _log.debug("skip %s: no price bar on/before %s", symbol, event_date)
                 continue
-            rejected = next((reason for passed, reason
-                             in (rule(event, metrics, self._cfg) for rule in _HARD_FILTERS)
-                             if not passed), None)
-            if rejected:
-                _log.debug("reject %s %s: %s", symbol, event.get("date"), rejected)
+            failure = next(((passed, reason) for passed, reason
+                            in (rule(event, metrics, self._cfg) for rule in _HARD_FILTERS)
+                            if not passed), None)
+            if failure is not None:  # gate on the boolean, not the reason (a filter may return "")
+                _log.debug("reject %s %s: %s", symbol, event.get("date"), failure[1])
                 continue
             regime_ok = self._regime_ok(event_date)
             catalyst_type = event.get("catalyst_type", "Other")
@@ -285,6 +285,16 @@ def _self_check() -> None:
     no_floor = ScreenerConfig(ma_days=5, turnover_days=5, regime_ma_days=3, min_turnover_inr=1e7, min_price_inr=0)
     assert CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], no_floor).screen(penny_event), "floor 0 -> PENNY passes"
     assert not CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], cfg).screen(penny_event), "floor 20 -> PENNY dropped"
+
+    # Extension-path guard: a future appended filter returning (False, "") must still REJECT
+    # (screen() gates on the boolean, not the reason string).
+    original_filters = list(_HARD_FILTERS)
+    try:
+        _HARD_FILTERS.append(lambda event, metrics, screener_cfg: (False, ""))
+        blocked = CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], cfg).screen([events[0]])
+        assert not blocked, "a filter returning (False, '') must reject even with an empty reason"
+    finally:
+        _HARD_FILTERS[:] = original_filters
     assert picks["CAND1"].pct_below_ma > 0, picks["CAND1"]        # 98 vs 90 -> ~8.16% below
     assert picks["CAND1"].regime_ok is True, "rising breadth -> regime_ok"  # PIT trend up
 
