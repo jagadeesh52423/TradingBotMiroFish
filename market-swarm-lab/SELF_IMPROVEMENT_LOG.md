@@ -34,3 +34,11 @@ Re-ran the catalyst system on live Fyers OHLC (204/215 candidates, full window 2
 - **All-regime average is ~flat** (−0.03%/50%); the +2-3%/59-63% is the *regime-gated* number — confirms the edge is regime-dependent and the regime gate is what harvests it. Do NOT quote the gated number as the all-in average.
 - **Bugs the live-run + adversarial review caught** (none catchable by code review alone): Fyers 366-day cap silently returned [] at default lookback; provider + harness UTC-vs-IST date shifts; circuit off-by-one (prior-close referenced pre-entry day → spurious −8% stop); Fyers unadjusted vs yfinance adjusted (−62% fake gaps on corp-action events). **Promote:** always exercise the DEFAULT path end-to-end live before trusting a data provider; a self-check whose fake can't model the real API's limits is a blind spot.
 - **Still not tradeable-ready** — the one thing no backtest settles is a forward paper-trade (real-time entries, live regime, costs).
+
+## 2026-07-06 — Delivery % as a selection filter (tested → clean NEGATIVE)
+
+Wired delivery % (NSE `sec_bhavdata_full` bhavcopy, DELIV_PER, historical ≥1yr) as a composable, PIT-anchored (prior-session, lag≥1 enforced by ValueError not assert) screener filter; swept baseline vs OR(55/1.2×), AND, OR-65, OR-70 across the 0-3/3-6/6-9mo walk-forward. Runner + filter both reviewed, numbers trusted.
+- **Result: no credible hit-rate lift at any setting.** The well-powered window (3-6mo, n=109→46) moves 57%→59% (< 1 SE). The eye-catching 83-89% rates are all n=6-9 (SE ~10-15pp — one trade swings it). AND-combine actively HURTS (57%→46%, +1.83%→−4.62%). Delivery removes 61-88% of candidates for nothing.
+- **n-shrink is genuine selection, not a coverage gap** — 95% of candidates have PIT delivery data (reviewer measured); median deliv% 48.5%, only 33% clear the 55 floor. So the "no lift" conclusion isn't confounded.
+- **Decision: keep the delivery filter OFF by default (unchanged system).** Code stays as an off-by-default option. **Promote:** a filter that shrinks n without lifting the rate beyond ~1 binomial SE is not an edge — always report per-bucket n + SE, never eyeball a small-n rate as a win.
+- Plausible future: delivery as a ranking/sizing signal rather than a hard gate (gating just deletes sample) — low priority given the gate showed zero signal.
