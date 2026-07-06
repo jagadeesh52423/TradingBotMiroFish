@@ -34,5 +34,5 @@ state/runs/
 state/backtests/
 
 # Backtest cache & results
-services/backtest/.stageA_cache.json
+services/backtest/.*_cache.json
 services/backtest/*_result.json
