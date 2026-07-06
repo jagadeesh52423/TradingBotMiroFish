@@ -237,6 +237,15 @@ class InMemoryPriceSource:
         return self._bars.get(symbol.upper(), [])
 
 
+# NSE symbol -> yfinance ticker renames (yfinance lags some corporate rebrands). Add an entry
+# to fix a symbol that returns empty history on SYMBOL.NS (Open/Closed).
+_YF_RENAMES = {"GMRINFRA": "GMRAIRPORT", "PEL": "PIRAMAL"}
+
+
+def _yf_ticker(symbol: str) -> str:
+    return f"{_YF_RENAMES.get(symbol.upper(), symbol.upper())}.NS"
+
+
 class YFinancePriceSource:
     """Live PriceSource: daily OHLCV from yfinance SYMBOL.NS. Swappable for a Fyers source."""
 
@@ -246,7 +255,7 @@ class YFinancePriceSource:
     def daily_bars(self, symbol: str) -> list[dict]:
         try:
             import yfinance
-            hist = yfinance.Ticker(f"{symbol}.NS").history(period=self._period, auto_adjust=False)
+            hist = yfinance.Ticker(_yf_ticker(symbol)).history(period=self._period, auto_adjust=False)
         except Exception as exc:
             _log.warning("yfinance fetch failed for %s: %s", symbol, exc)
             return []
@@ -328,6 +337,9 @@ def _self_check() -> None:
     # Dedup: the same (symbol, date, purpose) listed twice (NSE double-lists) -> ONE candidate.
     duped = CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], cfg).screen([events[0], dict(events[0])])
     assert len(duped) == 1, f"duplicate events must dedup to one candidate: {duped}"
+
+    # yfinance rename map: renamed tickers resolve via _YF_RENAMES, others pass through + ".NS".
+    assert _yf_ticker("GMRINFRA") == "GMRAIRPORT.NS" and _yf_ticker("reliance") == "RELIANCE.NS", "yf rename"
     print("catalyst-screener self-check OK")
 
 
