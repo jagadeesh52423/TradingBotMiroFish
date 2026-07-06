@@ -88,7 +88,21 @@ def _event_index(bars: list[dict], event_date: date) -> int | None:
     return event_bar
 
 
+def _dedup_events(events: list[dict]) -> list[dict]:
+    """Drop duplicate corporate actions (NSE lists some twice) keyed on (symbol, date, purpose);
+    keep first occurrence and order."""
+    seen: set[tuple[str, str, str]] = set()
+    unique: list[dict] = []
+    for event in events:
+        key = ((event.get("symbol") or "").upper(), event.get("date", ""), event.get("purpose", ""))
+        if key not in seen:
+            seen.add(key)
+            unique.append(event)
+    return unique
+
+
 def _metrics_at_event(bars: list[dict], event_date: date, cfg: ScreenerConfig) -> dict | None:
+    bars = sorted(bars, key=lambda bar: bar["date"])  # defensive: _event_index assumes ascending
     event_bar = _event_index(bars, event_date)
     if event_bar is None:
         return None
@@ -161,15 +175,20 @@ class CatalystScreener:
 
     def screen(self, events: list[dict]) -> list[Candidate]:
         candidates: list[Candidate] = []
-        for event in events:
+        for event in _dedup_events(events):
             symbol = (event.get("symbol") or "").upper()
             event_date = parse_event_date(event.get("date", ""))
             if event_date is None:
                 continue
             metrics = _metrics_at_event(self._bars(symbol), event_date, self._cfg)
             if metrics is None:
+                _log.debug("skip %s: no price bar on/before %s", symbol, event_date)
                 continue
-            if not all(passed for passed, _ in (rule(event, metrics, self._cfg) for rule in _HARD_FILTERS)):
+            rejected = next((reason for passed, reason
+                             in (rule(event, metrics, self._cfg) for rule in _HARD_FILTERS)
+                             if not passed), None)
+            if rejected:
+                _log.debug("reject %s %s: %s", symbol, event.get("date"), rejected)
                 continue
             regime_ok = self._regime_ok(event_date)
             catalyst_type = event.get("catalyst_type", "Other")
@@ -182,10 +201,11 @@ class CatalystScreener:
                 pct_below_ma=metrics["pct_below_ma"],
                 turnover=round(metrics["turnover"], 0),
                 regime_ok=regime_ok,
-                thesis=(f"Beaten-down {catalyst_type} catalyst; {metrics['pct_below_ma']}% below 20d MA; "
-                        f"mean-reversion, hold ~{self._cfg.hold_days}d. EXPLORATORY — not advice."),
+                thesis=(f"Beaten-down {catalyst_type} catalyst; {metrics['pct_below_ma']}% below "
+                        f"{self._cfg.ma_days}d MA; mean-reversion, hold ~{self._cfg.hold_days}d. "
+                        f"EXPLORATORY — not advice."),
             ))
-        candidates.sort(key=lambda c: (c.regime_ok, c.pct_below_ma), reverse=True)
+        candidates.sort(key=lambda candidate: (candidate.regime_ok, candidate.pct_below_ma), reverse=True)
         return candidates
 
 
@@ -267,6 +287,10 @@ def _self_check() -> None:
     down_source = InMemoryPriceSource(dict(prices, **down))
     down_pick = CatalystScreener(down_source, ["D1", "D2"], cfg).screen([events[0]])
     assert down_pick and down_pick[0].regime_ok is False, "falling breadth -> regime_ok False"
+
+    # Dedup: the same (symbol, date, purpose) listed twice (NSE double-lists) -> ONE candidate.
+    duped = CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], cfg).screen([events[0], dict(events[0])])
+    assert len(duped) == 1, f"duplicate events must dedup to one candidate: {duped}"
     print("catalyst-screener self-check OK")
 
 

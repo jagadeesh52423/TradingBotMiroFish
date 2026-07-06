@@ -84,8 +84,8 @@ def _print_report(rows: list[dict], universe_spec: str = "market") -> None:
         print(f"  {row['symbol']:<12} {row['catalyst_type']:<11} {row['date']:<12} "
               f"{row['close']:>9.2f} {row['pct_below_ma']:>6.2f}% {row['turnover']/1e7:>12.2f} "
               f"{'OK' if row['regime_ok'] else 'off':>7}")
-    print("\nThesis (each candidate): mean-reversion on a non-earnings catalyst, hold ~20 trading days.")
-    print("Ranked regime_ok first; within, most-below-MA first. EXPLORATORY — paper-trade before capital.")
+    print("\nEach row's thesis states its mean-reversion hold horizon. Ranked regime_ok first;")
+    print("within, most-below-MA first. EXPLORATORY / research — paper-trade before any capital.")
 
 
 if __name__ == "__main__":
