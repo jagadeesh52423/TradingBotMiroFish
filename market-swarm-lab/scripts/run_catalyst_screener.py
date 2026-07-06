@@ -7,7 +7,8 @@ ranked candidates (regime_ok first). Price data via yfinance SYMBOL.NS (swappabl
 
 Universe (`--universe`): market [default] = every event symbol; nifty50 = the config whitelist;
 or a comma-separated custom list (e.g. --universe RELIANCE,LT). The liquidity filter does the
-narrowing. The regime breadth index always uses the Nifty50 whitelist as a stable market proxy.
+narrowing. The regime breadth index uses config catalyst_screener.regime_universe (default
+midcap150 — small/mid breadth, since the regime gate exists to sit out SMALL-CAP bear phases).
 
 *** EXPLORATORY / research — NOT investment advice. ***
 """
@@ -64,9 +65,11 @@ def run(universe_spec: str = "market") -> list[dict]:
     if symbols is not None:
         events = collector.filter_whitelist(events, symbols)
 
-    # Regime breadth index uses the Nifty50 whitelist as a stable market-regime proxy,
-    # independent of the (market-wide) screening set.
-    screener = CatalystScreener(YFinancePriceSource(), whitelist, ScreenerConfig.from_config(config))
+    # Regime breadth index uses a config-named small/mid universe (default midcap150) so the
+    # regime flag reflects the small-cap phase it exists to sit out, not large-cap Nifty50.
+    regime_universe = config.get("catalyst_screener", {}).get("regime_universe", "midcap150")
+    breadth_symbols = config.get("universes", {}).get(regime_universe) or whitelist
+    screener = CatalystScreener(YFinancePriceSource(), breadth_symbols, ScreenerConfig.from_config(config))
     return [candidate.to_row() for candidate in screener.screen(events)]
 
 

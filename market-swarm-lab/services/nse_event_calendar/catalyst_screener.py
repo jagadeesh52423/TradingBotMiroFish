@@ -41,6 +41,7 @@ class PriceSource(Protocol):
 class ScreenerConfig:
     exclude_types: tuple[str, ...] = ("Results",)
     min_turnover_inr: float = 1e7   # ~Rs 1 crore median daily turnover
+    min_price_inr: float = 20.0     # drop penny/thin names (India playbook: sub-Rs 20 = MM risk)
     ma_days: int = 20
     turnover_days: int = 120
     regime_ma_days: int = 10
@@ -53,6 +54,7 @@ class ScreenerConfig:
         return cls(
             exclude_types=tuple(cfg.get("exclude_types", defaults.exclude_types)),
             min_turnover_inr=float(cfg.get("min_turnover_inr", defaults.min_turnover_inr)),
+            min_price_inr=float(cfg.get("min_price_inr", defaults.min_price_inr)),
             ma_days=int(cfg.get("ma_days", defaults.ma_days)),
             turnover_days=int(cfg.get("turnover_days", defaults.turnover_days)),
             regime_ma_days=int(cfg.get("regime_ma_days", defaults.regime_ma_days)),
@@ -125,6 +127,10 @@ def _f_exclude_types(event: dict, metrics: dict, cfg: ScreenerConfig) -> tuple[b
     return event.get("catalyst_type") not in cfg.exclude_types, "excluded catalyst type"
 
 
+def _f_min_price(event: dict, metrics: dict, cfg: ScreenerConfig) -> tuple[bool, str]:
+    return metrics["close"] >= cfg.min_price_inr, "below min price floor (penny/thin)"
+
+
 def _f_liquid(event: dict, metrics: dict, cfg: ScreenerConfig) -> tuple[bool, str]:
     turnover = metrics["turnover"]
     return turnover is not None and turnover > cfg.min_turnover_inr, "below liquidity floor"
@@ -132,10 +138,10 @@ def _f_liquid(event: dict, metrics: dict, cfg: ScreenerConfig) -> tuple[bool, st
 
 def _f_below_ma(event: dict, metrics: dict, cfg: ScreenerConfig) -> tuple[bool, str]:
     close, sma = metrics["close"], metrics["sma"]
-    return sma is not None and close < sma, "not below the 20d MA (mean-reversion setup absent)"
+    return sma is not None and close < sma, "not below the trailing MA (mean-reversion setup absent)"
 
 
-_HARD_FILTERS = [_f_exclude_types, _f_liquid, _f_below_ma]
+_HARD_FILTERS = [_f_exclude_types, _f_min_price, _f_liquid, _f_below_ma]
 
 
 class CatalystScreener:
@@ -258,6 +264,8 @@ def _self_check() -> None:
         "ABOVE1": _bars(days, [100, 100, 100, 100, 100, 110, 90], 1_000_000),  # above MA -> reject
         "ILLIQ1": _bars(days, cand_closes, 10),                # below MA but tiny volume -> reject
         "EARN1": _bars(days, cand_closes, 1_000_000),          # Results -> excluded regardless
+        # PENNY: below MA (9.8 vs 9) + liquid (turnover 1.8cr) but price < Rs 20 -> min_price rejects.
+        "PENNY": _bars(days, [10, 10, 10, 10, 10, 9, 20], 2_000_000),
         "UP1": _bars(days, [100, 101, 102, 103, 104, 105, 106], 1_000_000),  # rising breadth
         "UP2": _bars(days, [100, 101, 102, 103, 104, 105, 106], 1_000_000),
     }
@@ -266,10 +274,17 @@ def _self_check() -> None:
         {"symbol": "ABOVE1", "purpose": "Dividend", "catalyst_type": "Dividend", "date": "06-Jul-2026"},
         {"symbol": "ILLIQ1", "purpose": "Buy Back", "catalyst_type": "Buyback", "date": "06-Jul-2026"},
         {"symbol": "EARN1", "purpose": "Financial Results", "catalyst_type": "Results", "date": "06-Jul-2026"},
+        {"symbol": "PENNY", "purpose": "Buy Back", "catalyst_type": "Buyback", "date": "06-Jul-2026"},
     ]
     screener = CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], cfg)
     picks = {c.symbol: c for c in screener.screen(events)}
-    assert set(picks) == {"CAND1"}, f"only the below-MA, liquid, non-earnings name should pass: {set(picks)}"
+    assert set(picks) == {"CAND1"}, f"only the below-MA, liquid, non-penny, non-earnings name should pass: {set(picks)}"
+
+    # min_price floor isolates PENNY: at floor 0 it passes (below-MA + liquid), at floor 20 it drops.
+    penny_event = [events[4]]
+    no_floor = ScreenerConfig(ma_days=5, turnover_days=5, regime_ma_days=3, min_turnover_inr=1e7, min_price_inr=0)
+    assert CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], no_floor).screen(penny_event), "floor 0 -> PENNY passes"
+    assert not CatalystScreener(InMemoryPriceSource(prices), ["UP1", "UP2"], cfg).screen(penny_event), "floor 20 -> PENNY dropped"
     assert picks["CAND1"].pct_below_ma > 0, picks["CAND1"]        # 98 vs 90 -> ~8.16% below
     assert picks["CAND1"].regime_ok is True, "rising breadth -> regime_ok"  # PIT trend up
 
