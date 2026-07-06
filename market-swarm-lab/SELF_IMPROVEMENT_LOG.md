@@ -1,0 +1,36 @@
+# Self-Improvement Log
+
+Test → fix → re-test loop findings for the Nubra equity signal backtester.
+
+## 2026-07-06 — Backtest tuning loop (win-rate / expectancy)
+
+**Target:** raise the 2%/5d TimesFM CALL signal's win rate; optimize out-of-sample expectancy (not raw win rate).
+
+- **backtester overfitting guardrail was cosmetic** → symptom: sweep ranked on train expectancy with only an `n_signals>=1` display filter, so a 1-trade fluke topped the ranking → root cause: no minimum-sample eligibility gate before the sort → fix: `MIN_TRAIN_SIGNALS=30` gate applied before ranking; thin configs can never rank → guard: reviewer verified; the tester later hit a negative-train/positive-val config (n=30) that the rule correctly excluded. **Promote:** any parameter-sweep/backtest ranking MUST enforce a minimum-sample floor before selection — added as a standing rule for backtest code.
+- **thread-safety scare on shared TimesFM across workers** → symptom: 4 threads shared one TimesFMForecastingService → root cause investigation: proved from timesfm source that inference is pure (no_grad/eval, call-local tensors, per-call KV-cache, no `self.x=` writes) → fix: serialized forecast anyway (Stage A = parallel fetch + sequential forecast) as belt-and-suspenders; cache proven trustworthy either way (deterministic inference). **Learning:** verify library thread-safety from source before rebuilding on suspicion; deterministic inference makes parallel/sequential caches identical.
+- **silent lookahead risk in market/sector levers** → symptom: basket/sector PIT-safety assumes all cached series share the same last trading date, but Stage A stored closes with no dates → root cause: alignment by array index, not by date → fix (deferred to Fyers bundle, forces a rebuild anyway): store per-bar dates in Stage-A meta, align by date, assert same last date, fail loudly. **Promote:** never align multi-series time data by array position — align by explicit timestamp.
+
+**Preliminary result (Nubra UAT, 33/48 symbols, ~54-day close-only, single regime — NOT a proven edge):**
+- Baseline 2%/2%/5d: validation expectancy −0.095%/trade, win 41.6%.
+- Best config (min_pred_ret 2%, target 2%, **stop 4%, horizon 10d**, no conviction/trend gate): validation n=92, **win 58.7%**, stop 28.3%, **expectancy +0.357%/trade**.
+- Read: real lift over baseline, but thin and cost-sensitive (~Indian round-trip cost 0.1–0.3%), single-regime. The lift came from a **wider stop + longer horizon**, not the conviction filter. Carry into the Fyers deep-history run before trusting.
+
+**Still open (Task #6, blocked on user Fyers token):** authoritative run on 48 symbols + deep history + intrabar OHLC stops + real NIFTY index + date-aligned market/sector levers.
+
+## 2026-07-06 — Catalyst-event system (goal: better returns + better probability)
+
+Walk-forward event study over NSE event-calendar (~9–12mo, yfinance-priced). Findings:
+- **Naive catalyst-buying loses** at every holding timeframe (1–20d), every window; earnings (Results) are the worst (−1 to −2% median, ~36% positive, n≈2340). The edge is entirely in SELECTION.
+- **Emerged system** (see `docs/catalyst_meanreversion_system.md`): exclude earnings + liquid(>₹1cr) + below-20d-MA (mean-reversion, NOT momentum) + ~20d hold + market-regime gate. Beats naive on both return and hit-rate: +2–3% median / 59–63% positive vs baseline negative/~40%, in up/neutral markets; regime gate sits out the small-cap bear (6–9mo window where baseline −5.8%).
+- **News buzz** (Google News RSS, ~3mo history) separates +5d winners (49%→88% positive) — promising 5th filter, needs scale. Reddit needs OAuth creds.
+- **Bug caught mid-analysis:** a below-MA/above-MA filter inversion flipped a whole result set — always assert the subset direction on a known case. **Promote:** in any factor study, print the selected subset's defining condition on a sample row before trusting aggregates.
+- **Limits:** daily-close (no intraday/circuit modeling), 6-month bear limits regime-gate sample. Real validation needs Fyers intraday + forward paper-trade.
+
+## 2026-07-06 — Fyers intraday re-validation (make-it-tradeable step)
+
+Re-ran the catalyst system on live Fyers OHLC (204/215 candidates, full window 2025-09→2026-06). Report: `docs/superpowers/specs/2026-07-06-fyers-revalidation-report.md`.
+- **A stop HURTS this mean-reversion setup** (confirmed on real high/low): time-exit −0.03%/50% → +8%/−8% intrabar −0.85%/45.6%. Bracket fires 81 target / 81 stop / 42 time — it clips winners more than it saves losers (mean-reversion pops dip before reverting). **Design: time-exit, no tight stop.**
+- **Circuits are a non-issue** for the liquid candidate set (0 entries blocked, 0 unfillable exits). The liquidity filter already handles it.
+- **All-regime average is ~flat** (−0.03%/50%); the +2-3%/59-63% is the *regime-gated* number — confirms the edge is regime-dependent and the regime gate is what harvests it. Do NOT quote the gated number as the all-in average.
+- **Bugs the live-run + adversarial review caught** (none catchable by code review alone): Fyers 366-day cap silently returned [] at default lookback; provider + harness UTC-vs-IST date shifts; circuit off-by-one (prior-close referenced pre-entry day → spurious −8% stop); Fyers unadjusted vs yfinance adjusted (−62% fake gaps on corp-action events). **Promote:** always exercise the DEFAULT path end-to-end live before trusting a data provider; a self-check whose fake can't model the real API's limits is a blind spot.
+- **Still not tradeable-ready** — the one thing no backtest settles is a forward paper-trade (real-time entries, live regime, costs).

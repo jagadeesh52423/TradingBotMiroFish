@@ -36,3 +36,5 @@ state/backtests/
 # Backtest cache & results
 services/backtest/.*_cache.json
 services/backtest/*_result.json
+services/backtest/.*_checkpoint*.json
+services/backtest/*_report.json
