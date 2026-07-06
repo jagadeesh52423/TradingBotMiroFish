@@ -41,6 +41,10 @@ _CALENDAR_DAYS_PER_TRADING_DAY = 2.5
 # Intraday requests span a session or two; floor the range so a short lookback still
 # clears an intervening weekend/holiday.
 _MIN_INTRADAY_DAYS = 4
+# Fyers history caps one request at ~366 calendar days for daily and ~100 for intraday;
+# ohlcv_range() chunks a wider span into requests of this size and merges (no silent truncation).
+_MAX_REQUEST_DAYS = {"1D": 360, "D": 360}
+_MAX_INTRADAY_REQUEST_DAYS = 90
 
 # NSE trades in IST and Fyers stamps daily candles at 00:00 IST (= 18:30 UTC prior day);
 # the screener compares bar["date"] <= event_date, so converting in UTC shifts every daily
@@ -113,22 +117,9 @@ class FyersDataProvider(MarketDataProvider):
         )
         return self._client
 
-    def _fetch_bars(self, symbol: str, interval: str, lookback: int) -> list[dict]:
-        """Full OHLCV bars, oldest-first, at most `lookback`. Shared by ohlcv/historical."""
-        resolution = _RESOLUTION.get(interval, "1D")
-        end = datetime.now(timezone.utc)
-        start = end - timedelta(days=_calendar_days(resolution, lookback))
-        request = {
-            "symbol": self._to_fyers_symbol(symbol),
-            "resolution": resolution,
-            "date_format": "1",
-            "range_from": start.strftime("%Y-%m-%d"),
-            "range_to": end.strftime("%Y-%m-%d"),
-            "cont_flag": "1",
-        }
-        response = self._get_client().history(request)
-        candles = (response or {}).get("candles") or []
-        # Fyers candle = [epoch_seconds, open, high, low, close, volume].
+    @staticmethod
+    def _candles_to_bars(candles: list) -> list[dict]:
+        # Fyers candle = [epoch_seconds, open, high, low, close, volume]; -> full OHLCV, oldest-first.
         bars = [
             {
                 "timestamp": int(candle[0]) * 1000,
@@ -141,7 +132,36 @@ class FyersDataProvider(MarketDataProvider):
             for candle in candles
         ]
         bars.sort(key=lambda bar: bar["timestamp"])
-        return bars[-lookback:]
+        return bars
+
+    def _history(self, symbol: str, resolution: str, range_from: date, range_to: date) -> list[dict]:
+        request = {
+            "symbol": self._to_fyers_symbol(symbol),
+            "resolution": resolution,
+            "date_format": "1",
+            "range_from": range_from.strftime("%Y-%m-%d"),
+            "range_to": range_to.strftime("%Y-%m-%d"),
+            "cont_flag": "1",
+        }
+        response = self._get_client().history(request) or {}
+        status = response.get("s")
+        if status == "no_data":
+            return []  # legitimately empty range (e.g. all-holiday window) — not an error
+        if status not in (None, "ok"):
+            # An over-cap (>366d daily), bad-symbol, or throttled request returns s="error" with no
+            # candles; raise so it can't masquerade as "no data" (silent []). daily_bars fails soft.
+            raise RuntimeError(
+                f"Fyers history {status!r} for {symbol} {range_from}..{range_to}: "
+                f"{response.get('message', response)}"
+            )
+        return self._candles_to_bars(response.get("candles") or [])
+
+    def _fetch_bars(self, symbol: str, interval: str, lookback: int) -> list[dict]:
+        """Recent full OHLCV bars, oldest-first, at most `lookback` (trailing today)."""
+        resolution = _RESOLUTION.get(interval, "1D")
+        end = datetime.now(timezone.utc).date()
+        start = end - timedelta(days=_calendar_days(resolution, lookback))
+        return self._history(symbol, resolution, start, end)[-lookback:]
 
     def ohlcv(self, symbol: str, interval: str = "1d", lookback: int = 20) -> list[dict]:
         """Full OHLCV bars, oldest-first: {timestamp(ms), open, high, low, close, volume}.
@@ -151,6 +171,21 @@ class FyersDataProvider(MarketDataProvider):
         historical(), so this extension is Fyers-specific (callers hold the concrete type).
         """
         return self._fetch_bars(symbol, interval, lookback)
+
+    def ohlcv_range(self, symbol: str, start: date, end: date, interval: str = "1d") -> list[dict]:
+        """Full OHLCV over an explicit [start, end] date range — for backtests over event windows,
+        where trailing-lookback fetch can't reach a past event. Oldest-first, de-duplicated by
+        timestamp. Spans wider than the Fyers per-request cap are auto-chunked and merged."""
+        resolution = _RESOLUTION.get(interval, "1D")
+        span = _MAX_REQUEST_DAYS.get(resolution, _MAX_INTRADAY_REQUEST_DAYS)
+        bars_by_ts: dict[int, dict] = {}
+        chunk_start = start
+        while chunk_start <= end:
+            chunk_end = min(end, chunk_start + timedelta(days=span))
+            for bar in self._history(symbol, resolution, chunk_start, chunk_end):
+                bars_by_ts[bar["timestamp"]] = bar
+            chunk_start = chunk_end + timedelta(days=1)
+        return sorted(bars_by_ts.values(), key=lambda bar: bar["timestamp"])
 
     def historical(self, symbol: str, interval: str = "1d", lookback: int = 20) -> list[dict]:
         """Close bars, oldest-first: {"close": float, "timestamp": int ms} (contract shape)."""
@@ -189,7 +224,11 @@ class FyersPriceSource:
 
     def daily_bars(self, symbol: str) -> list[dict]:
         try:
-            bars = self._provider.ohlcv(symbol, interval="1d", lookback=self._lookback)
+            # ohlcv_range (not ohlcv) so the fetch CHUNKS: the screener's 120d-turnover window wants
+            # >146 sessions, but a single Fyers daily request caps at 366 calendar days.
+            end = datetime.now(tz=_IST).date()
+            start = end - timedelta(days=_calendar_days("1D", self._lookback))
+            bars = self._provider.ohlcv_range(symbol, start, end, interval="1d")[-self._lookback:]
         except Exception as exc:  # unresolved symbol / auth / SDK -> thin the proxy, never crash
             _log.warning("Fyers daily_bars failed for %s: %s", symbol, exc)
             return []
@@ -206,16 +245,30 @@ class FyersPriceSource:
 # ---------------------------------------------------------------- self-check
 
 class _FakeFyersClient:
-    """Offline stand-in for fyersModel.FyersModel — records the last history request."""
+    """Offline stand-in for fyersModel.FyersModel — records requests and MODELS Fyers' real
+    behaviour: an over-cap daily range (>366d) returns s="error" with no candles; candles=None
+    returns s="no_data"; otherwise s="ok". This lets the self-check catch the silent-[] class."""
 
-    def __init__(self, candles: list[list], ltp: float = 100.5) -> None:
+    _DAILY_CAP_DAYS = 366
+
+    def __init__(self, candles: list[list] | None, ltp: float = 100.5) -> None:
         self._candles = candles
         self._ltp = ltp
-        self.last_request: dict | None = None
+        self.requests: list[dict] = []
+
+    @property
+    def last_request(self) -> dict | None:
+        return self.requests[-1] if self.requests else None
 
     def history(self, request: dict) -> dict:
-        self.last_request = request
-        return {"candles": self._candles}
+        self.requests.append(request)
+        span = (datetime.strptime(request["range_to"], "%Y-%m-%d")
+                - datetime.strptime(request["range_from"], "%Y-%m-%d")).days
+        if span > self._DAILY_CAP_DAYS:
+            return {"s": "error", "message": "invalid input", "code": -1}
+        if self._candles is None:
+            return {"s": "no_data"}
+        return {"s": "ok", "candles": self._candles}
 
     def quotes(self, request: dict) -> dict:
         return {"d": [{"v": {"lp": self._ltp}}]}
@@ -275,6 +328,33 @@ def _self_check() -> None:
     assert fake.last_request["symbol"] == "NSE:NIFTY50-INDEX"
     provider.ohlcv("RELIANCE", "5m", 10)
     assert fake.last_request["resolution"] == "5" and fake.last_request["symbol"] == "NSE:RELIANCE-EQ"
+
+    # ohlcv_range(): one request for a narrow span, auto-chunked+merged for a wide one, deduped.
+    fake.requests.clear()
+    provider.ohlcv_range("RELIANCE", date(2024, 1, 1), date(2024, 2, 1))
+    assert len(fake.requests) == 1 and fake.requests[0]["range_from"] == "2024-01-01"
+    fake.requests.clear()
+    wide = provider.ohlcv_range("RELIANCE", date(2024, 1, 1), date(2025, 6, 1))  # ~517d > 360d cap
+    assert len(fake.requests) >= 2, "wide span must chunk"
+    assert [bar["close"] for bar in wide] == [11.0, 13.0, 14.0], "chunks merged + deduped by ts"
+
+    # 366-day cap: an over-cap SINGLE request must RAISE (loud), never silently return [].
+    try:
+        provider.ohlcv("RELIANCE", "1d", 300)  # _calendar_days=750d > cap -> Fyers s="error"
+        raise AssertionError("over-cap ohlcv() must raise, not return []")
+    except RuntimeError:
+        pass
+    # But every ohlcv_range chunk stays <=360d, so a >cap span still resolves (chunked under the cap).
+    fake.requests.clear()
+    spanned = provider.ohlcv_range("RELIANCE", date(2023, 1, 1), date(2025, 1, 1))  # 731d -> 3 chunks
+    assert len(fake.requests) >= 2 and [bar["close"] for bar in spanned] == [11.0, 13.0, 14.0]
+    # daily_bars at the DEFAULT lookback (300) must return bars end-to-end — the exact path that
+    # was silently emptying before F5 (it now routes through the chunker).
+    assert FyersPriceSource(provider).daily_bars("RELIANCE"), "default-lookback daily_bars must not be []"
+
+    # no_data status -> [] (a legitimately empty range), NOT a raise.
+    nodata = FyersDataProvider("cid", "tok", client=_FakeFyersClient(None))
+    assert nodata.ohlcv("RELIANCE", "1d", 5) == []
 
     # current_price extracts v.lp as Decimal.
     assert provider.current_price("RELIANCE") == Decimal("100.5")
