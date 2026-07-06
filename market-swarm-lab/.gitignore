@@ -32,3 +32,7 @@ state/cache/
 .DS_Store
 state/runs/
 state/backtests/
+
+# Backtest cache & results
+services/backtest/.stageA_cache.json
+services/backtest/*_result.json
