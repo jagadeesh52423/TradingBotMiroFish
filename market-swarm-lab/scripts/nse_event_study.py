@@ -128,6 +128,8 @@ def _summarize(rows: list[dict]) -> dict:
         moves_5d = [r["+5d"] for r in catalyst_rows if r.get("+5d") is not None]
         summary[catalyst] = {
             "n_events": len(catalyst_rows),
+            "n_with_+2d": len(moves_2d),  # averages below are over these (recent events lack forwards)
+            "n_with_+5d": len(moves_5d),
             "avg_+2d_pct": round(100 * mean(moves_2d), 2) if moves_2d else None,
             "avg_+5d_pct": round(100 * mean(moves_5d), 2) if moves_5d else None,
             "pct_positive_+2d": round(100 * sum(m > 0 for m in moves_2d) / len(moves_2d), 1) if moves_2d else None,

@@ -71,7 +71,9 @@ class NseEventCalendarCollector:
     @classmethod
     def from_config(cls, config: dict) -> "NseEventCalendarCollector":
         cfg = config.get("event_calendar", {})
-        raw = cfg.get("catalyst_keywords")  # {type: [keyword, ...]} — insertion order = priority
+        # config catalyst_keywords REPLACES the default map wholesale (not merged) — include every
+        # type you want, in priority order; {type: [keyword, ...]}, insertion order = priority.
+        raw = cfg.get("catalyst_keywords")
         keywords = [(ctype, tuple(kws)) for ctype, kws in raw.items()] if raw else None
         return cls(
             cache_ttl_seconds=int(cfg.get("cache_ttl_seconds", _CACHE_TTL_SECONDS)),
