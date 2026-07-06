@@ -38,3 +38,7 @@ services/backtest/.*_cache.json
 services/backtest/*_result.json
 services/backtest/.*_checkpoint*.json
 services/backtest/*_report.json
+
+# NSE delivery bhavcopy cache (daily CSV data)
+services/nse_delivery/.cache/
+services/backtest/.delivery_cache/

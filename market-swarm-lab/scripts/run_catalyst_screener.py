@@ -30,6 +30,7 @@ from services.nse_event_calendar.catalyst_screener import (
     ScreenerConfig,
     YFinancePriceSource,
 )
+from services.nse_delivery.delivery_collector import NseDeliveryCollector
 from services.nse_event_calendar.nse_event_calendar_collector import NseEventCalendarCollector
 
 _CONFIG_PATH = _ROOT / "config" / "nubra_config.json"
@@ -69,7 +70,12 @@ def run(universe_spec: str = "market") -> tuple[list[dict], tuple[int, int]]:
     # regime flag reflects the small-cap phase it exists to sit out, not large-cap Nifty50.
     regime_universe = config.get("catalyst_screener", {}).get("regime_universe", "midcap150")
     breadth_symbols = config.get("universes", {}).get(regime_universe) or whitelist
-    screener = CatalystScreener(YFinancePriceSource(), breadth_symbols, ScreenerConfig.from_config(config))
+    screener_cfg = ScreenerConfig.from_config(config)
+    # Delivery confirmation is a config toggle (catalyst_screener.require_delivery). Attach the
+    # collector only when on; otherwise the filter is a no-op and no delivery CSVs are fetched.
+    delivery_source = NseDeliveryCollector.from_config(config) if screener_cfg.require_delivery else None
+    screener = CatalystScreener(YFinancePriceSource(), breadth_symbols, screener_cfg,
+                                delivery_source=delivery_source)
     rows = [candidate.to_row() for candidate in screener.screen(events)]
     return rows, screener.regime_coverage()
 
