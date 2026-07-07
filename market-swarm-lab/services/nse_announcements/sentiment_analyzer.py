@@ -249,6 +249,87 @@ class AiSentimentAnalyzer(SentimentAnalyzer):
         return self._client
 
 
+_OLLAMA_HOST_DEFAULT = "http://localhost:11434"
+_OLLAMA_MODEL_DEFAULT = "qwen3:8b"  # ponytail: local default; swap to glm-5.2:cloud in config once subscribed
+_OLLAMA_TIMEOUT = 60
+
+
+@register_analyzer("ollama")
+class OllamaSentimentAnalyzer(SentimentAnalyzer):
+    """LLM sentiment via a local/cloud Ollama model. Model-agnostic — set via config/env.
+
+    Degrades to the keyword scorer if Ollama is unreachable or errors (same contract as "ai").
+    """
+
+    def __init__(
+        self,
+        fallback: KeywordSentimentAnalyzer,
+        model: str = _OLLAMA_MODEL_DEFAULT,
+        host: str = _OLLAMA_HOST_DEFAULT,
+    ) -> None:
+        self._fallback = fallback
+        self._model = model
+        self._host = host.rstrip("/")
+        self._logged_error = False
+
+    @classmethod
+    def from_config(cls, config: dict) -> "OllamaSentimentAnalyzer":
+        _load_dotenv_quietly()
+        nse_cfg = config.get("nse", {})
+        model = os.environ.get("OLLAMA_MODEL") or nse_cfg.get("ollama_model") or _OLLAMA_MODEL_DEFAULT
+        host = os.environ.get("OLLAMA_HOST") or nse_cfg.get("ollama_host") or _OLLAMA_HOST_DEFAULT
+        return cls(KeywordSentimentAnalyzer.from_config(config), model, host)
+
+    def analyze(self, items: list[dict]) -> SentimentResult:
+        prompt = _build_prompt(items)
+        if prompt is None:
+            return SentimentResult(0.0, "neutral", 0.0, "no filings", "ollama", degraded=False)
+        try:
+            out = self._call_ollama(prompt)
+        except Exception as exc:  # unreachable, timeout, bad JSON — degrade
+            if not self._logged_error:
+                _log.warning("Ollama sentiment failed (%s) — degrading to keyword", exc)
+                self._logged_error = True
+            return _degrade_to_keyword(self._fallback, items)
+        return SentimentResult(
+            sentiment_score=out.sentiment_score,
+            sentiment_label=label_from_score(out.sentiment_score),
+            confidence=out.confidence,
+            reasoning=out.reasoning,
+            engine="ollama",
+            degraded=False,
+        )
+
+    def _call_ollama(self, prompt: str) -> _AiOut:
+        import requests
+        resp = requests.post(
+            f"{self._host}/api/chat",
+            json={
+                "model": self._model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "format": _AiOut.model_json_schema(),  # forces schema-valid JSON output
+                "options": {"temperature": 0},
+            },
+            timeout=_OLLAMA_TIMEOUT,
+        )
+        resp.raise_for_status()
+        content = resp.json()["message"]["content"]
+        return _AiOut.model_validate_json(content)
+
+
+def _degrade_to_keyword(fallback: KeywordSentimentAnalyzer, items: list[dict]) -> SentimentResult:
+    kw = fallback.analyze(items)
+    return SentimentResult(
+        sentiment_score=kw.sentiment_score,
+        sentiment_label=kw.sentiment_label,
+        confidence=kw.confidence,
+        reasoning=kw.reasoning,
+        engine="keyword",
+        degraded=True,
+    )
+
+
 def _build_prompt(items: list[dict]) -> str | None:
     texts = [t for item in items if (t := (item.get("attchmntText") or "").strip())]
     if not texts:

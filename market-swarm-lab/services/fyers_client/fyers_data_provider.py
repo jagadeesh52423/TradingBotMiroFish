@@ -200,6 +200,17 @@ class FyersDataProvider(MarketDataProvider):
         ltp = _extract_ltp(response)
         return Decimal(str(ltp))
 
+    def circuit(self, symbol: str) -> dict | None:
+        """Circuit-band status via Fyers depth() (quotes() does NOT carry circuit fields).
+
+        depth() returns per-symbol ltp + upper_ckt/lower_ckt. Returns
+        {'last', 'upper', 'lower', 'band'} or None when unavailable — the entry gate
+        treats None per its block_on_unknown policy (fail-open by default).
+        """
+        fyers_symbol = self._to_fyers_symbol(symbol)
+        response = self._get_client().depth({"symbol": fyers_symbol, "ohlcv_flag": "1"})
+        return _extract_circuit(response, fyers_symbol)
+
 
 def _extract_ltp(response: dict) -> float:
     """Pull the LTP out of a Fyers quotes() response (`d` list, `v.lp`)."""
@@ -207,6 +218,38 @@ def _extract_ltp(response: dict) -> float:
     if not rows:
         raise RuntimeError(f"Fyers quotes() returned no data: {response!r}")
     return rows[0]["v"]["lp"]
+
+
+# Fyers quotes `v` circuit fields; accept the documented name plus a fallback alias so a
+# minor SDK naming change degrades to None (fail-open), never a wrong number.
+_UPPER_CKT_KEYS = ("upper_ckt", "upper_circuit")
+_LOWER_CKT_KEYS = ("lower_ckt", "lower_circuit")
+
+
+def _first(v: dict, keys: tuple[str, ...]):
+    for k in keys:
+        if v.get(k):
+            return v[k]
+    return None
+
+
+def _extract_circuit(response: dict, symbol: str) -> dict | None:
+    # depth() `d` is keyed by symbol -> row with ltp + upper_ckt/lower_ckt.
+    d = (response or {}).get("d") or {}
+    row = d.get(symbol) or (next(iter(d.values())) if d else None)
+    if not isinstance(row, dict):
+        return None
+    last = row.get("ltp")
+    upper = _first(row, _UPPER_CKT_KEYS)
+    if last is None or not upper:
+        return None  # can't judge proximity without last + a real upper band
+    lower = _first(row, _LOWER_CKT_KEYS)
+    return {
+        "last": float(last),
+        "upper": float(upper),
+        "lower": float(lower) if lower else None,
+        "band": None,
+    }
 
 
 class FyersPriceSource:

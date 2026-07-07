@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+<channel>
+<title>"RELIANCE" (stock OR share) - Google News</title>
+<item>
+<title>Reliance Industries shares jump 4% as board approves record dividend and bonus issue</title>
+<link>https://news.google.com/rss/articles/AAAA</link>
+<guid isPermaLink="false">AAAA</guid>
+<pubDate>Mon, 06 Jul 2026 09:15:00 GMT</pubDate>
+<description>&lt;a href="https://example.com/1"&gt;Reliance shares jump&lt;/a&gt;</description>
+<source url="https://www.moneycontrol.com">Moneycontrol</source>
+</item>
+<item>
+<title>RIL wins large contract for new energy expansion; brokerages upgrade rating</title>
+<link>https://news.google.com/rss/articles/BBBB</link>
+<guid isPermaLink="false">BBBB</guid>
+<pubDate>Mon, 06 Jul 2026 07:40:00 GMT</pubDate>
+<description>&lt;a href="https://example.com/2"&gt;RIL wins contract&lt;/a&gt;</description>
+<source url="https://economictimes.indiatimes.com">Economic Times</source>
+</item>
+<item>
+<title>Reliance Q1 net profit rises on strong retail growth</title>
+<link>https://news.google.com/rss/articles/CCCC</link>
+<guid isPermaLink="false">CCCC</guid>
+<pubDate>Sun, 05 Jul 2026 12:00:00 GMT</pubDate>
+<description>&lt;a href="https://example.com/3"&gt;Reliance Q1 profit&lt;/a&gt;</description>
+<source url="https://www.livemint.com">Mint</source>
+</item>
+</channel>
+</rss>

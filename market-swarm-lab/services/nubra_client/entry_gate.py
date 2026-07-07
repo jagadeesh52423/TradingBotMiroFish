@@ -4,7 +4,10 @@
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
+
+_log = logging.getLogger(__name__)
 
 
 class EntryGate(ABC):
@@ -73,3 +76,96 @@ class ExpectedUpsideGate(EntryGate):
             f"Unrecognised horizon format {horizon!r}. "
             "Expected '<N>d' (days) or '<N>h' (hours), e.g. '1d', '4h'."
         )
+
+
+class CircuitStatusGate(EntryGate):
+    """Blocks a BUY (CALL) into a stock pinned at / near its upper circuit band.
+
+    Playbook §1: an upper-circuit-locked name is unbuyable — you'd bid into a
+    frozen queue that may not clear for days. Only CALL signals are gated; PUT
+    (sell-to-close) and HOLD pass through untouched.
+
+    Config keys (inside entry_threshold.circuit_gate):
+        upper_band_buffer_pct: float  — block if last >= upper * (1 - buffer/100). Default 0.5.
+        block_on_unknown: bool        — block BUY when circuit data is unavailable. Default False (fail-open).
+    """
+
+    def __init__(self, provider, config: dict | None = None) -> None:
+        cfg = config or {}
+        self._provider = provider
+        self._buffer_pct = float(cfg.get("upper_band_buffer_pct", 0.5))
+        self._block_on_unknown = bool(cfg.get("block_on_unknown", False))
+
+    def evaluate(self, signal: dict) -> tuple[bool, str | None]:
+        if str(signal.get("trade", "")).upper() != "CALL":
+            return True, None  # only BUYs can be trapped by an upper circuit
+
+        ticker = str(signal.get("ticker", "")).upper()
+        status = self._provider.status(ticker)
+        if status is None:
+            if self._block_on_unknown:
+                return False, "circuit status unknown — blocked (block_on_unknown)"
+            _log.info("%s | circuit status unknown — allowing (fail-open)", ticker)
+            return True, None
+
+        last, upper = status["last"], status["upper"]
+        threshold = upper * (1 - self._buffer_pct / 100.0)
+        if last >= threshold:
+            return False, (
+                f"at/near upper circuit — last {last:.2f} >= {threshold:.2f} "
+                f"(upper {upper:.2f}, buffer {self._buffer_pct:.2g}%) — unbuyable"
+            )
+        return True, None
+
+
+class SectorTrendGate(EntryGate):
+    """Blocks a BUY (CALL) when the symbol's sector index is trending down.
+
+    Playbook §11 trade-killer: a catalyst fighting a falling sector is a weaker trade.
+    Only CALL is gated; PUT/HOLD pass. Fails open when the sector trend is unknown
+    (unmapped symbol, thin data, fetch error) — never a false block.
+    """
+
+    def __init__(self, provider) -> None:
+        self._provider = provider
+
+    def evaluate(self, signal: dict) -> tuple[bool, str | None]:
+        if str(signal.get("trade", "")).upper() != "CALL":
+            return True, None
+        ticker = str(signal.get("ticker", "")).upper()
+        if self._provider.trend(ticker) == "down":
+            return False, "sector index trending down — catalyst fighting the tape"
+        return True, None
+
+
+class FirstFifteenGate(EntryGate):
+    """Blocks a BUY (CALL) when the opening gap has FADED below the day's open (§3/§4).
+
+    Only CALL is gated. Fails open when the gap can't be confirmed (before 09:30 IST,
+    no intraday data, non-trading day) — so it's a no-op in daily/backtest runs and
+    active only during a live intraday session.
+    """
+
+    def __init__(self, provider) -> None:
+        self._provider = provider
+
+    def evaluate(self, signal: dict) -> tuple[bool, str | None]:
+        if str(signal.get("trade", "")).upper() != "CALL":
+            return True, None
+        if self._provider.gap_status(str(signal.get("ticker", "")).upper()) == "faded":
+            return False, "opening gap faded below day open — not holding (§4 gate 3)"
+        return True, None
+
+
+class CompositeEntryGate(EntryGate):
+    """Runs gates in order; the first block wins."""
+
+    def __init__(self, gates: list[EntryGate]) -> None:
+        self._gates = gates
+
+    def evaluate(self, signal: dict) -> tuple[bool, str | None]:
+        for gate in self._gates:
+            ok, reason = gate.evaluate(signal)
+            if not ok:
+                return False, reason
+        return True, None

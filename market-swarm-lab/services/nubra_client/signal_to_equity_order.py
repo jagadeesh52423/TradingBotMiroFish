@@ -32,9 +32,12 @@ class SignalToEquityOrder:
 
         if trade == "CALL":
             risk_amount = self._account * (self._risk_pct / Decimal("100"))
-            qty = floor(risk_amount / ltp)
+            # Circuit-band-aware sizing (§5): the runner attaches size_factor (<=1) for
+            # tight-band names whose frozen-exit risk warrants a smaller position. Default 1.0.
+            size_factor = Decimal(str(signal.get("size_factor", 1.0)))
+            qty = floor(risk_amount / ltp * size_factor)
             if qty < 1:
-                return None, f"skip: computed qty {qty} (risk {risk_amount}/ltp {ltp})"
+                return None, f"skip: computed qty {qty} (risk {risk_amount}/ltp {ltp} x{size_factor})"
             return self._order(ticker, OrderSide.BUY, qty, ltp, sig_id,
                                trading_date, "BUY"), "buy"
 

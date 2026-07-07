@@ -341,3 +341,34 @@ class TestAiAnalyzerLiteLLM:
         assert result.engine == "keyword"
         assert result.degraded is True
         ctor.assert_not_called()
+
+
+class TestOllamaSentimentAnalyzer:
+    def test_unreachable_host_degrades_to_keyword(self):
+        # Dead port — requests.post raises, must degrade not crash.
+        analyzer = get_analyzer("ollama", {"nse": {"ollama_host": "http://127.0.0.1:1"}})
+        result = analyzer.analyze([{"attchmntText": "penalty fraud investigation net loss"}])
+        assert result.engine == "keyword"
+        assert result.degraded is True
+        assert result.sentiment_label == "bearish"
+
+    def test_parses_ollama_json_response(self):
+        analyzer = get_analyzer("ollama", {"nse": {}})
+        resp = MagicMock()
+        resp.json.return_value = {
+            "message": {"content": '{"sentiment_score": 0.8, "confidence": 0.9, "reasoning": "bonus + dividend"}'}
+        }
+        with patch("requests.post", return_value=resp):
+            result = analyzer.analyze([{"attchmntText": "board approved bonus and dividend"}])
+        assert result.engine == "ollama"
+        assert result.degraded is False
+        assert result.sentiment_score == 0.8
+        assert result.sentiment_label == "bullish"
+
+    def test_empty_items_neutral_no_call(self):
+        analyzer = get_analyzer("ollama", {"nse": {}})
+        with patch("requests.post") as post:
+            result = analyzer.analyze([])
+        assert result.sentiment_label == "neutral"
+        assert result.engine == "ollama"
+        post.assert_not_called()

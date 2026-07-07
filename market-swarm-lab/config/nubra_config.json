@@ -72,7 +72,51 @@
   "entry_threshold": {
     "min_expected_upside_pct": 2.0,
     "per_symbol": {},
-    "max_horizon_days": null
+    "max_horizon_days": null,
+    "circuit_gate": {
+      "enabled": true,
+      "source": "fyers",
+      "upper_band_buffer_pct": 0.5,
+      "block_on_unknown": false,
+      "cache_ttl_seconds": 60
+    },
+    "position_sizing": {
+      "enabled": true,
+      "band_tiers": [[2.5, 0.5], [5.5, 0.7], [10000, 1.0]]
+    },
+    "first15_gate": {
+      "enabled": true,
+      "fade_tolerance_pct": 0.1
+    },
+    "sector_gate": {
+      "enabled": true,
+      "lookback": 20,
+      "min_bars": 10,
+      "sector_map": {
+        "AXISBANK": "NSE:NIFTYBANK-INDEX", "HDFCBANK": "NSE:NIFTYBANK-INDEX",
+        "ICICIBANK": "NSE:NIFTYBANK-INDEX", "KOTAKBANK": "NSE:NIFTYBANK-INDEX",
+        "SBIN": "NSE:NIFTYBANK-INDEX", "BAJFINANCE": "NSE:NIFTYBANK-INDEX",
+        "BAJAJFINSV": "NSE:NIFTYBANK-INDEX", "HDFCLIFE": "NSE:NIFTYBANK-INDEX",
+        "SBILIFE": "NSE:NIFTYBANK-INDEX", "SBICARD": "NSE:NIFTYBANK-INDEX",
+        "LICI": "NSE:NIFTYBANK-INDEX", "M&MFIN": "NSE:NIFTYBANK-INDEX",
+        "HUDCO": "NSE:NIFTYBANK-INDEX",
+        "HCLTECH": "NSE:NIFTYIT-INDEX", "INFY": "NSE:NIFTYIT-INDEX",
+        "TCS": "NSE:NIFTYIT-INDEX", "TECHM": "NSE:NIFTYIT-INDEX",
+        "WIPRO": "NSE:NIFTYIT-INDEX",
+        "DRREDDY": "NSE:NIFTYPHARMA-INDEX", "LUPIN": "NSE:NIFTYPHARMA-INDEX",
+        "SUNPHARMA": "NSE:NIFTYPHARMA-INDEX", "APOLLO": "NSE:NIFTYPHARMA-INDEX",
+        "EICHERMOT": "NSE:NIFTYAUTO-INDEX", "HEROMOTOCO": "NSE:NIFTYAUTO-INDEX",
+        "MARUTI": "NSE:NIFTYAUTO-INDEX",
+        "JSWSTEEL": "NSE:NIFTYMETAL-INDEX", "TATASTEEL": "NSE:NIFTYMETAL-INDEX",
+        "HINDUNILVR": "NSE:NIFTYFMCG-INDEX", "ITC": "NSE:NIFTYFMCG-INDEX",
+        "MARICO": "NSE:NIFTYFMCG-INDEX", "TATACONSUM": "NSE:NIFTYFMCG-INDEX",
+        "RELIANCE": "NSE:NIFTYENERGY-INDEX", "NTPC": "NSE:NIFTYENERGY-INDEX",
+        "ONGC": "NSE:NIFTYENERGY-INDEX", "POWERGRID": "NSE:NIFTYENERGY-INDEX",
+        "BPCL": "NSE:NIFTYENERGY-INDEX", "GAIL": "NSE:NIFTYENERGY-INDEX",
+        "TATAPOWER": "NSE:NIFTYENERGY-INDEX", "ADANIGREEN": "NSE:NIFTYENERGY-INDEX",
+        "ADANIPOWER": "NSE:NIFTYENERGY-INDEX"
+      }
+    }
   },
   "signal": {
     "strategy": "blended",
@@ -102,8 +146,26 @@
     "cache_ttl_seconds": 900,
     "sentiment_engine": "ai",
     "ai_model": "claude-sonnet-4-5-20250929",
+    "ollama_model": "qwen3:8b",
+    "ollama_host": "http://localhost:11434",
     "ai_catalyst": {
       "enabled": false
+    }
+  },
+  "news": {
+    "google": {
+      "enabled": true,
+      "lookback_days": 7,
+      "max_items": 20,
+      "cache_ttl_seconds": 900,
+      "query_template": "\"{symbol}\" (stock OR share) when:{lookback}d"
+    }
+  },
+  "delivery": {
+    "auto_fetch": true,
+    "conviction_flag": {
+      "enabled": true,
+      "trailing_days": 20
     }
   },
   "runner": {

@@ -104,21 +104,23 @@ class NseAnnouncementsCollector:
 
     # ------------------------------------------------------------------ public
 
-    def collect(self, symbol: str) -> dict[str, Any]:
+    def fetch(self, symbol: str) -> tuple[list[dict], str]:
+        """Return (items, provider_mode) without scoring — for aggregation over sources."""
         symbol = symbol.upper()
         cached = self._from_cache(symbol)
         if cached is not None:
-            items, provider_mode = cached, "nse_live"
-        else:
-            try:
-                items = self._fetch(symbol)
-                self._cache[symbol] = (items, time.monotonic() + self._cache_ttl)
-                provider_mode = "nse_live"
-            except Exception as exc:
-                _log.warning("NSE fetch failed for %s: %s", symbol, exc)
-                items = self._load_fixture(symbol)
-                provider_mode = "fixture_fallback"
+            return cached, "nse_live"
+        try:
+            items = self._fetch(symbol)
+            self._cache[symbol] = (items, time.monotonic() + self._cache_ttl)
+            return items, "nse_live"
+        except Exception as exc:
+            _log.warning("NSE fetch failed for %s: %s", symbol, exc)
+            return self._load_fixture(symbol), "fixture_fallback"
 
+    def collect(self, symbol: str) -> dict[str, Any]:
+        symbol = symbol.upper()
+        items, provider_mode = self.fetch(symbol)
         result = self._analyzer.analyze(items)
 
         return {

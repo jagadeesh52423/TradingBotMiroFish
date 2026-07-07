@@ -14,6 +14,9 @@ dependencies = [
   "pandas>=2.0.0",
   "pyarrow>=14.0.0",
   "filelock>=3.13",
+  "requests>=2.31.0",
+  "tenacity>=8.2.0",
+  "fyers-apiv3>=3.0.0",
   # nubra-sdk is published on TestPyPI. Install with:
   #   pip install -i https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple nubra-sdk
   # Pin the version once verified in UAT (research saw v0.4.4; installed actual package is nubra_python_sdk).
