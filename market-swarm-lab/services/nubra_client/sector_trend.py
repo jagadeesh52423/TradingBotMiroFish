@@ -8,12 +8,41 @@ symbol is unmapped, data is thin, or the fetch errors — the gate then allows.
 """
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 
 _log = logging.getLogger(__name__)
 
 _DEFAULT_LOOKBACK = 20
 _DEFAULT_MIN_BARS = 10
+
+# Bundled snapshot of {NSE:<sector>-INDEX: [members]} from NSE sector-index constituents.
+# Constituents change ~monthly, so a committed snapshot is a robust default that removes any
+# runtime dependency on niftyindices.com (which throttles). Refresh via build_sector_snapshot.py.
+_SNAPSHOT = Path(__file__).parent / "fixtures" / "sector_constituents.json"
+
+
+def load_dynamic_sector_map() -> dict[str, str]:
+    """Build {SYMBOL: NSE:<sector>-INDEX} from the bundled sector-constituent snapshot.
+
+    Covers every member of each NSE sector index (auto-updating when the snapshot is refreshed),
+    replacing a hardcoded map. A stock in no sector index stays unmapped — the gate then fails
+    open (honest: there's no sector-index tailwind to check for it).
+    """
+    if not _SNAPSHOT.exists():
+        _log.warning("sector snapshot %s missing — sector map empty (gate fails open)", _SNAPSHOT)
+        return {}
+    try:
+        data = json.loads(_SNAPSHOT.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _log.warning("sector snapshot unreadable: %s", exc)
+        return {}
+    out: dict[str, str] = {}
+    for index_symbol, members in data.items():
+        for sym in members:
+            out.setdefault(str(sym).upper(), index_symbol)  # first index wins on overlap
+    return out
 
 
 class SectorTrendProvider:
@@ -40,7 +69,12 @@ class SectorTrendProvider:
             bars = fyers.historical(index_symbol, interval="1d", lookback=lookback + 5)
             return [b["close"] for b in bars]
 
-        return cls(sg.get("sector_map", {}), closes_fn, lookback, min_bars)
+        # Dynamic map (all sector-index members, auto-updating) + config static map as override.
+        sector_map: dict[str, str] = {}
+        if sg.get("dynamic", True):
+            sector_map.update(load_dynamic_sector_map())
+        sector_map.update({k.upper(): v for k, v in (sg.get("sector_map") or {}).items()})  # override wins
+        return cls(sector_map, closes_fn, lookback, min_bars)
 
     def trend(self, symbol: str) -> str | None:
         index = self._map.get(symbol.upper())

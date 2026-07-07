@@ -43,7 +43,8 @@ class WatchlistStore:
         out = []
         for d in cur:
             picks = [{"symbol": s["symbol"], "entry_ltp": s.get("entry_ltp"),
-                      "score": s.get("score"), "upside_pct": s.get("upside_pct")}
+                      "score": s.get("score"), "upside_pct": s.get("upside_pct"),
+                      "targets": s.get("targets")}
                      for s in d.get("symbols", []) if s.get("status") == "elected"]
             out.append({"run_id": d["run_id"], "run_date": d.get("run_date"), "elected": picks})
         return out

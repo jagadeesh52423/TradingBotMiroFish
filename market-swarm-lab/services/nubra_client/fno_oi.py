@@ -25,6 +25,20 @@ def pcr_label(pcr: float | None) -> str | None:
     return "balanced"
 
 
+def oi_buildup_label(call_chg, put_chg) -> str | None:
+    """Descriptive day-over-day OI buildup (§8 — NOT a directional signal, per playbook).
+    'call_buildup' when calls added more OI, 'put_buildup' when puts did, else 'balanced'."""
+    if call_chg is None or put_chg is None:
+        return None
+    if abs(call_chg) + abs(put_chg) == 0:
+        return "flat"
+    if call_chg > put_chg * 1.2:
+        return "call_buildup"
+    if put_chg > call_chg * 1.2:
+        return "put_buildup"
+    return "balanced"
+
+
 class FyersOptionProvider:
     """Wraps FyersDataProvider.option_summary with a fail-safe .summary()."""
 

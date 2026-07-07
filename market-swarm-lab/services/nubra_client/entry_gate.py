@@ -152,8 +152,31 @@ class FirstFifteenGate(EntryGate):
     def evaluate(self, signal: dict) -> tuple[bool, str | None]:
         if str(signal.get("trade", "")).upper() != "CALL":
             return True, None
-        if self._provider.gap_status(str(signal.get("ticker", "")).upper()) == "faded":
+        # §4 gate 3 needs BOTH price-hold and above-normal volume — allow only on "held".
+        status = self._provider.gap_status(str(signal.get("ticker", "")).upper())
+        if status == "faded":
             return False, "opening gap faded below day open — not holding (§4 gate 3)"
+        if status == "weak_volume":
+            return False, "first-15 volume below normal — unconfirmed move (§4 gate 3)"
+        return True, None
+
+
+class RegimeGate(EntryGate):
+    """Blocks a BUY (CALL) when the broad market is trending down (§10).
+
+    The catalyst-swing edge is regime-dependent (up-markets only). Only CALL is gated;
+    fails open when regime is unknown (data unavailable). Market-wide, so the same regime
+    applies to every symbol in the run.
+    """
+
+    def __init__(self, provider) -> None:
+        self._provider = provider
+
+    def evaluate(self, signal: dict) -> tuple[bool, str | None]:
+        if str(signal.get("trade", "")).upper() != "CALL":
+            return True, None
+        if self._provider.regime() == "down":
+            return False, "market regime down — catalyst-swing edge is up-market-only (§10)"
         return True, None
 
 

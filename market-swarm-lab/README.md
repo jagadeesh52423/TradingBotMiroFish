@@ -469,6 +469,12 @@ tunable under `discovery`). Pass `--universe nifty50`/`midcap150` to pin a fixed
 Only the playbook gates apply — the old non-playbook caps (min-upside 2%, max-trades 5,
 min-confidence) have been removed.
 
+**Upside comes only from TimesFM.** The forecast (5-day predicted return) is produced by the
+neural **TimesFM 2.5 200M** model — there is **no formulaic/momentum fallback**. If TimesFM is
+unavailable, the symbol is skipped (`no_forecast`) rather than fabricating an upside number. News
+strength **gates** direction (strong-bearish + weak-forecast → HOLD) but does not size the upside.
+Requires the TimesFM venv (`.venv-timesfm`, ~2GB) + `ENABLE_TIMESFM=true`.
+
 Discovery applies the playbook's own liquidity/safety filters (§2 liquidity; §1/§11 illiquid-
 circuit-lock trap): **NSE ASM/GSM-surveilled names are excluded**, and names below a **daily-turnover
 floor (₹5 cr, from the sec-bhavcopy)** are dropped — so a market-wide sweep doesn't surface penny/

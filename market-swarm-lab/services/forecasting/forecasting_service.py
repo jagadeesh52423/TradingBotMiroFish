@@ -23,7 +23,13 @@ _timesfm_error: str | None = None
 _timesfm_model = None
 _timesfm_config_cls = None
 
-# TimesFM 1.0 200M is installed in .venv-timesfm — enabled by default
+
+class ForecastUnavailable(RuntimeError):
+    """Raised when no real forecast can be produced (TimesFM unavailable). There is no
+    formulaic fallback — callers skip the symbol rather than fabricate an upside number."""
+
+
+# TimesFM 2.5 200M is installed in .venv-timesfm — enabled by default
 ENABLE_TIMESFM = os.getenv("ENABLE_TIMESFM", "true").lower() == "true"
 _ROOT = Path(__file__).resolve().parents[2]
 
@@ -47,17 +53,16 @@ def _load_timesfm():
         import numpy as np  # noqa: F401
         import timesfm
 
-        model = timesfm.TimesFm(
-            hparams=timesfm.TimesFmHparams(
-                backend="pytorch",
-                per_core_batch_size=32,
-                horizon_len=5,
-                num_layers=20,
-                model_dims=1280,
-            ),
-            checkpoint=timesfm.TimesFmCheckpoint(
-                huggingface_repo_id="google/timesfm-1.0-200m-pytorch"
-            ),
+        # TimesFM 2.5 API (google/timesfm-2.5-200m-pytorch): from_pretrained + compile.
+        model = timesfm.TimesFM_2p5_200M_torch.from_pretrained("google/timesfm-2.5-200m-pytorch")
+        model.compile(
+            timesfm.ForecastConfig(
+                max_context=1024,
+                max_horizon=16,
+                normalize_inputs=True,
+                use_continuous_quantile_head=True,
+                fix_quantile_crossing=True,
+            )
         )
         _timesfm_model = model
         return True
@@ -178,16 +183,15 @@ class TimesFMForecastingService:
         horizon: int,
     ) -> dict[str, Any]:
         closes = series.get("close", [])
-        if ENABLE_TIMESFM and _load_timesfm():
-            try:
-                return self._timesfm_forecast(ticker, series, horizon, closes)
-            except Exception as exc:
-                return self._fallback_forecast(
-                    ticker, closes, horizon,
-                    provider_mode="timesfm_runtime_error_fallback",
-                    error=str(exc),
-                )
-        return self._fallback_forecast(ticker, closes, horizon)
+        # Upside comes ONLY from TimesFM — no formulaic/linear fallback. If the model is
+        # unavailable or errors, raise ForecastUnavailable so the caller skips the symbol
+        # (no forecast → no upside → no CALL) rather than fabricating a momentum number.
+        if not (ENABLE_TIMESFM and _load_timesfm()):
+            raise ForecastUnavailable(
+                f"TimesFM unavailable ({_timesfm_error or 'ENABLE_TIMESFM disabled'}) — "
+                "upside requires TimesFM; no formulaic fallback."
+            )
+        return self._timesfm_forecast(ticker, series, horizon, closes)
 
     # -------------------------------------------------------- TimesFM path
 
@@ -201,68 +205,25 @@ class TimesFMForecastingService:
         import numpy as np
 
         inputs = [np.array(closes, dtype=np.float32)]
-        # TimesFM 1.0 API: forecast(inputs, freq)
-        point_forecast, quantile_forecast = _timesfm_model.forecast(
-            inputs=inputs,
-            freq=[0],
-        )
-        # point_forecast: (1, horizon)
-        # quantile_forecast: (1, horizon, N_quantiles)
-        pts = [round(float(v), 4) for v in point_forecast[0]]
+        # TimesFM 2.5 API: forecast(horizon, inputs) -> (point[1,h], quantile[1,h,10]).
+        point_forecast, quantile_forecast = _timesfm_model.forecast(horizon=horizon, inputs=inputs)
+        pts = [round(float(v), 4) for v in point_forecast[0][:horizon]]
+        # quantile head: index 0 is the mean; 1..9 are deciles q10..q90.
         nq = quantile_forecast.shape[2]
-        q10_idx = max(1, nq // 10)
-        q50_idx = nq // 2
-        q90_idx = min(nq - 1, nq * 9 // 10)
-        q10 = [round(float(v), 4) for v in quantile_forecast[0, :, q10_idx]]
-        q50 = [round(float(v), 4) for v in quantile_forecast[0, :, q50_idx]]
-        q90 = [round(float(v), 4) for v in quantile_forecast[0, :, q90_idx]]
+        q10_idx, q50_idx, q90_idx = (1, 5, 9) if nq >= 10 else (max(1, nq // 10), nq // 2, nq - 1)
+        q10 = [round(float(v), 4) for v in quantile_forecast[0, :horizon, q10_idx]]
+        q50 = [round(float(v), 4) for v in quantile_forecast[0, :horizon, q50_idx]]
+        q90 = [round(float(v), 4) for v in quantile_forecast[0, :horizon, q90_idx]]
         direction, confidence = _derive_direction(closes[-1] if closes else 0.0, pts)
         return {
             "ticker": ticker.upper(),
-            "provider_mode": "timesfm_1p0_200m_pytorch",
+            "provider_mode": "timesfm_2p5_200m_pytorch",
             "horizon": horizon,
             "forecast": pts,
             "quantiles": {"p10": q10, "p50": q50, "p90": q90},
             "direction": direction,
             "confidence": confidence,
         }
-
-    # -------------------------------------------------------- fallback path
-
-    def _fallback_forecast(
-        self,
-        ticker: str,
-        closes: list[float],
-        horizon: int,
-        provider_mode: str = "local_fallback",
-        error: str | None = None,
-    ) -> dict[str, Any]:
-        if len(closes) < 2:
-            closes = closes + [100.0] * max(0, 2 - len(closes))
-
-        last = closes[-1]
-        recent = closes[-min(5, len(closes)):]
-        trend_per_step = (recent[-1] - recent[0]) / max(len(recent) - 1, 1)
-        vol = stdev(closes[-min(10, len(closes)):]) if len(closes) > 1 else last * 0.01
-
-        pts = [round(last + trend_per_step * (i + 1), 2) for i in range(horizon)]
-        q10 = [round(p - 1.28 * vol, 2) for p in pts]
-        q50 = pts
-        q90 = [round(p + 1.28 * vol, 2) for p in pts]
-        direction, confidence = _derive_direction(last, pts)
-
-        result: dict[str, Any] = {
-            "ticker": ticker.upper(),
-            "provider_mode": provider_mode,
-            "horizon": horizon,
-            "forecast": pts,
-            "quantiles": {"p10": q10, "p50": q50, "p90": q90},
-            "direction": direction,
-            "confidence": confidence,
-        }
-        if error:
-            result["fallback_reason"] = error
-        return result
 
 
 # ------------------------------------------------------------------ helpers

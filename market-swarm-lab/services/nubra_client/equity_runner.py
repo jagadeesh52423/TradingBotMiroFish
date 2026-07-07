@@ -25,23 +25,25 @@ from risk_engine_service import RiskEngineService  # noqa: E402
 from services.nse_announcements.nse_announcements_collector import NseAnnouncementsCollector
 from services.nubra_client.news_aggregator import AggregatingNewsCollector
 from services.nubra_client.entry_gate import (
-    CircuitStatusGate, ExpectedUpsideGate, FirstFifteenGate, SectorTrendGate)
+    CircuitStatusGate, ExpectedUpsideGate, FirstFifteenGate, RegimeGate, SectorTrendGate)
+from services.nubra_client.market_regime import MarketRegimeProvider
 from services.nubra_client.circuit_status import FyersCircuitProvider, NseCircuitProvider
 from services.nubra_client.sector_trend import SectorTrendProvider
 from services.nubra_client.first_fifteen import FirstFifteenProvider
 from services.nse_delivery.delivery_collector import NseDeliveryCollector
 from services.nubra_client.watchlist_scorer import watchlist_score
 from services.nubra_client.trade_targets import scale_out_targets
-from services.nubra_client.fno_oi import FyersOptionProvider, pcr_label
+from services.nubra_client.fno_oi import FyersOptionProvider, pcr_label, oi_buildup_label
 from services.nubra_client.time_stop import stale_symbols
 from services.nubra_client.entry_ledger import EntryLedger
 from services.nubra_client.trade_log import TradeLog
 from services.nubra_client.pre_open import PreOpenCollector, pre_open_conviction
+from services.nse_deals.deals_collector import NseDealsCollector
 from services.nubra_client.position_sizing import band_pct_from_circuit, band_size_factor
 from services.nubra_client.equity_assembly import build_equity_stack
 from services.nubra_client.equity_context_builder import build_equity_context
 from services.nubra_client.signal_strategies import get_strategy
-from services.forecasting.forecasting_service import TimesFMForecastingService
+from services.forecasting.forecasting_service import TimesFMForecastingService, ForecastUnavailable
 
 _log = logging.getLogger(__name__)
 _CONFIG_PATH = _ROOT / "config" / "nubra_config.json"
@@ -104,6 +106,8 @@ class NubraEquityRunner:
                     else FyersCircuitProvider.from_config(config)
                 )
                 self._extra_gates.append(CircuitStatusGate(self._circuit_provider, cg_cfg))
+            if et_cfg.get("regime_gate", {}).get("enabled"):
+                self._extra_gates.append(RegimeGate(MarketRegimeProvider.from_config(config)))
             if et_cfg.get("sector_gate", {}).get("enabled"):
                 self._sector_provider = SectorTrendProvider.from_config(config)
                 self._extra_gates.append(SectorTrendGate(self._sector_provider))
@@ -132,6 +136,12 @@ class NubraEquityRunner:
         po_cfg = config.get("pre_open", {}).get("conviction_flag", {})
         self._preopen = PreOpenCollector.from_config(config) if po_cfg.get("enabled") else None
         self._preopen_cfg = po_cfg
+        self._deals = NseDealsCollector.from_config(config) if config.get("deals", {}).get("enabled") else None
+        if config.get("shareholding", {}).get("enabled"):
+            from services.nse_shareholding.shareholding_collector import ShareholdingCollector
+            self._shareholding = ShareholdingCollector.from_config(config)
+        else:
+            self._shareholding = None
         self._min_bars: int = int(config.get("signal", {}).get("min_bars_for_signal", 10))
         self._nubra_client = nubra_client
         self._stack = equity_stack
@@ -215,7 +225,9 @@ class NubraEquityRunner:
         if not s:
             return {**empty, "fno_available": False}
         return {"pcr": s["pcr"], "pcr_label": pcr_label(s["pcr"]),
-                "call_oi": s["call_oi"], "put_oi": s["put_oi"], "fno_available": True}
+                "call_oi": s["call_oi"], "put_oi": s["put_oi"], "fno_available": True,
+                "call_oi_change": s.get("call_oi_change"), "put_oi_change": s.get("put_oi_change"),
+                "oi_buildup": oi_buildup_label(s.get("call_oi_change"), s.get("put_oi_change"))}
 
     def _watchlist(self, symbol: str, nse_result: dict, signal: dict, delivery_pct) -> dict:
         """§2 5-factor score. Each factor 0..1; missing factors renormalise out (see scorer)."""
@@ -344,7 +356,16 @@ class NubraEquityRunner:
             signal = self._strategy.build(symbol, context, None, None, nse_result)
             provider_modes = {"timesfm": None, "mirofish": None, "nse": nse_result.get("provider_mode")}
         else:
-            forecast = self._forecasting.forecast_from_prices(symbol, closes, horizon=5)
+            try:
+                forecast = self._forecasting.forecast_from_prices(symbol, closes, horizon=5)
+            except ForecastUnavailable as exc:
+                _log.warning("%s | no forecast (%s) — skipped", symbol, exc)
+                return {
+                    "symbol": symbol, "signal": None, "forecast": None, "risk": None,
+                    "entry_gate": None, "nse_sentiment": nse_result.get("sentiment_label"),
+                    "ltp": ltp, "provider_modes": {"timesfm": "unavailable"},
+                    "status": "skipped", "skip_reason": "no_forecast",
+                }
             sim_request = {
                 "documents": nse_result["documents"],
                 "forecast_summary": {
@@ -419,8 +440,12 @@ class NubraEquityRunner:
             **delivery_flag,
             "fno": fno_flag,
             "pre_open": self._pre_open_flag(symbol),
+            # §7/§8 bulk/block institutional deals (soft — feeds stacking, never gates).
+            "deals": self._deals.flag(symbol) if self._deals else {"has_deal": None},
+            # §9 promoter-stake trend (soft, quarterly).
+            "promoter": self._shareholding.promoter_flag(symbol) if self._shareholding else {"trend": None},
             # §7 catalyst stacking — distinct sources firing for this symbol.
-            "catalyst_stack": _catalyst_stack(nse_result),
+            "catalyst_stack": _catalyst_stack(nse_result, self._deals.flag(symbol) if self._deals else None),
             # §2 watchlist ranking score + factor breakdown.
             "watchlist": self._watchlist(symbol, nse_result, signal, delivery_flag.get("delivery_pct")),
             # §5 scale-out targets (advisory) — CALL entries only.
@@ -469,11 +494,14 @@ def _chunk(lst: list, size: int):
         yield lst[i : i + size]
 
 
-def _catalyst_stack(nse_result: dict) -> dict:
-    """§7: how many distinct news sources are firing for this symbol. >=2 = stacked
-    (multiple simultaneous confirmations raise conviction). Descriptive, never gates."""
+def _catalyst_stack(nse_result: dict, deals_flag: dict | None = None) -> dict:
+    """§7: how many distinct confirmations are firing for this symbol — news sources plus a
+    bulk/block institutional deal. >=2 = stacked (multiple simultaneous confirmations raise
+    conviction). Descriptive, never gates."""
     audit = nse_result.get("source_audit", {})
     firing = sorted(k for k, v in audit.items() if isinstance(v, dict) and v.get("count", 0) > 0)
+    if deals_flag and deals_flag.get("has_deal"):
+        firing.append("bulk_block_deal")
     return {"catalyst_stack_count": len(firing), "catalyst_sources": firing, "stacked": len(firing) >= 2}
 
 

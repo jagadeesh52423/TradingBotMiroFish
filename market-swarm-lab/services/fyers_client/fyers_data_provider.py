@@ -249,7 +249,18 @@ def _extract_option_summary(response: dict) -> dict | None:
     if not call_oi:  # cash-only / no F&O data
         return None
     pcr = (put_oi / call_oi) if put_oi is not None else None
-    return {"call_oi": call_oi, "put_oi": put_oi, "pcr": round(pcr, 3) if pcr is not None else None}
+    # Day-over-day OI change (buildup), summed across strikes via per-strike `oich`.
+    call_chg = put_chg = 0
+    for row in d.get("optionsChain") or []:
+        oich = row.get("oich")
+        if oich is None:
+            continue
+        if row.get("option_type") == "CE":
+            call_chg += oich
+        elif row.get("option_type") == "PE":
+            put_chg += oich
+    return {"call_oi": call_oi, "put_oi": put_oi, "pcr": round(pcr, 3) if pcr is not None else None,
+            "call_oi_change": call_chg, "put_oi_change": put_chg}
 
 
 def _extract_circuit(response: dict, symbol: str) -> dict | None:

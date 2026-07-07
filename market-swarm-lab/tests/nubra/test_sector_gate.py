@@ -58,3 +58,17 @@ def test_gate_ignores_put():
     prov = _provider([200 - i for i in range(20)])  # down sector
     gate = SectorTrendGate(prov)
     assert gate.evaluate({"trade": "PUT", "ticker": "SBIN"}) == (True, None)
+
+
+# --- dynamic sector map (bundled snapshot) ----------------------------------
+
+def test_dynamic_sector_map_loads_snapshot():
+    from services.nubra_client.sector_trend import load_dynamic_sector_map
+    m = load_dynamic_sector_map()
+    assert len(m) > 100  # snapshot has ~160 members across sector indices
+    # a few well-known memberships (stable large-caps)
+    assert m.get("INFY") == "NSE:NIFTYIT-INDEX"
+    assert m.get("TATASTEEL") == "NSE:NIFTYMETAL-INDEX"
+    assert m.get("HDFCBANK") == "NSE:NIFTYBANK-INDEX"
+    # every mapped index must be a Fyers-valid -INDEX symbol
+    assert all(v.startswith("NSE:") and v.endswith("-INDEX") for v in m.values())

@@ -93,7 +93,7 @@
       "band_tiers": [[2.5, 0.5], [5.5, 0.7], [10000, 1.0]]
     },
     "first15_gate": {
-      "enabled": true,
+      "enabled": false,
       "fade_tolerance_pct": 0.1
     },
     "targets": {
@@ -107,8 +107,15 @@
       "enabled": true,
       "max_sessions": 3
     },
+    "regime_gate": {
+      "enabled": true,
+      "index": "NSE:NIFTY50-INDEX",
+      "ma_days": 20,
+      "min_bars": 15
+    },
     "sector_gate": {
       "enabled": true,
+      "dynamic": true,
       "lookback": 20,
       "min_bars": 10,
       "sector_map": {
@@ -231,6 +238,12 @@
       "big_gap_pct": 1.0,
       "min_qty": 50000
     }
+  },
+  "deals": {
+    "enabled": true
+  },
+  "shareholding": {
+    "enabled": true
   },
   "runner": {
     "max_workers": 3,

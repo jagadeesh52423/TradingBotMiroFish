@@ -43,3 +43,23 @@ def test_provider_fails_safe():
         def option_summary(self, s):
             raise RuntimeError("no token")
     assert FyersOptionProvider(_Boom()).summary("RELIANCE") is None
+
+
+# --- OI buildup (§8, descriptive) -------------------------------------------
+
+def test_oi_buildup_label():
+    from services.nubra_client.fno_oi import oi_buildup_label
+    assert oi_buildup_label(10000, 2000) == "call_buildup"
+    assert oi_buildup_label(2000, 10000) == "put_buildup"
+    assert oi_buildup_label(1000, 1000) == "balanced"
+    assert oi_buildup_label(0, 0) == "flat"
+    assert oi_buildup_label(None, 5) is None
+
+
+def test_extract_option_summary_oi_change():
+    from services.fyers_client.fyers_data_provider import _extract_option_summary
+    resp = {"data": {"callOi": 100, "putOi": 60, "optionsChain": [
+        {"option_type": "CE", "oich": 5000}, {"option_type": "CE", "oich": 3000},
+        {"option_type": "PE", "oich": 1000}, {"option_type": "PE", "oich": None}]}}
+    out = _extract_option_summary(resp)
+    assert out["call_oi_change"] == 8000 and out["put_oi_change"] == 1000
