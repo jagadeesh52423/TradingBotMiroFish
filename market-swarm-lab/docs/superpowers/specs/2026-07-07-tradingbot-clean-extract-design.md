@@ -44,7 +44,7 @@ TradingBot/                         # ~/Code/own/TradingBot
 │   ├── config/                     # typed config (dataclass/pydantic) + loader
 │   ├── providers/                  # ALL external IO behind interfaces
 │   │   ├── market/                 #   FyersProvider (price/ohlcv/circuit/options) — async
-│   │   ├── news/                   #   NSE announcements, Google, USFDA, insider, PIB, Reddit
+│   │   ├── news/                   #   NSE announcements, Google, USFDA, insider, PIB, Reddit (+ sentiment engines + aggregator — folded into the news layer)
 │   │   ├── discovery/              #   catalyst calendar + announcements + surveillance/liquidity guard
 │   │   └── ratelimit.py            #   TokenBucket
 │   ├── forecast/                   # TimesFMForecaster (batched, warm-up)
@@ -140,7 +140,7 @@ class MarketDataProvider(Protocol):
 # providers/news/base.py
 class NewsSource(Protocol):
     name: str
-    async def fetch(self, sym: str) -> list[NewsItem]: ...     # fixture-fallback, fail-safe
+    async def fetch(self, sym: str) -> tuple[list[NewsItem], str]: ...  # (items, provider_mode: '<name>_live'|'fixture_fallback'|'no_mapping'|'no_credentials'); fixture-fallback, fail-safe
 
 # providers/ratelimit.py
 class RateLimiter(Protocol):
