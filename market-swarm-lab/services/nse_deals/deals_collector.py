@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import threading
 import time
 from pathlib import Path
 
@@ -26,11 +27,14 @@ _CACHE_TTL = 3600  # EOD reports — refresh hourly is plenty
 
 
 class NseDealsCollector:
-    """Latest bulk/block deals keyed by symbol, with cache + fixture fallback."""
+    """Latest bulk/block deals keyed by symbol, with cache; fails safe to empty (no fixture
+    fallback in the live path — a fetch failure must never be reported as a real deal)."""
 
     def __init__(self, session: requests.Session | None = None, cache_ttl_seconds: int = _CACHE_TTL) -> None:
         self._session = session
-        self._cache_ttl = cache_ttl_seconds
+        self._lock = threading.Lock()          # guards session build
+        self._snap_lock = threading.Lock()     # guards the shared-snapshot fetch (separate lock
+        self._cache_ttl = cache_ttl_seconds    # to avoid re-entrancy with _lock via _fetch)
         self._by_symbol: dict[str, list[dict]] | None = None
         self._expiry = 0.0
 
@@ -61,26 +65,37 @@ class NseDealsCollector:
     def _snapshot(self) -> dict[str, list[dict]]:
         if self._by_symbol is not None and time.monotonic() < self._expiry:
             return self._by_symbol
-        rows: list[dict] = []
-        for kind, url in (("bulk", _BULK_URL), ("block", _BLOCK_URL)):
-            try:
-                rows += _parse(self._fetch(url), kind)
-            except Exception as exc:
-                _log.warning("NSE %s deals fetch failed: %s", kind, exc)
-                rows += _parse_fixture(kind)
-        by: dict[str, list[dict]] = {}
-        for r in rows:
-            by.setdefault(r["symbol"], []).append(r)
-        self._by_symbol = by
-        self._expiry = time.monotonic() + self._cache_ttl
-        return by
+        # One pair of CSV fetches serves all symbols: hold the lock across the fetch so that on
+        # a cold cache exactly one runner thread fetches+parses the market-wide bulk/block feeds
+        # while the others wait and then read the warm cache — instead of every thread piling
+        # onto the endpoints. (Separate lock from _lock to avoid re-entering it via _fetch.)
+        with self._snap_lock:
+            if self._by_symbol is not None and time.monotonic() < self._expiry:
+                return self._by_symbol  # another thread warmed the cache while we waited
+            rows: list[dict] = []
+            for kind, url in (("bulk", _BULK_URL), ("block", _BLOCK_URL)):
+                try:
+                    rows += _parse(self._fetch(url), kind)
+                except Exception as exc:
+                    # Fail-safe to empty (no_deal), not to the committed fixture: a live-fetch
+                    # failure must never be reported as "an institutional deal happened today".
+                    _log.warning("NSE %s deals fetch failed — no %s deals this run: %s", kind, kind, exc)
+            by: dict[str, list[dict]] = {}
+            for r in rows:
+                by.setdefault(r["symbol"], []).append(r)
+            self._by_symbol = by
+            self._expiry = time.monotonic() + self._cache_ttl
+            return by
 
     @retry(retry=retry_if_exception_type(requests.RequestException),
            stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True)
     def _fetch(self, url: str) -> str:
         if self._session is None:
-            self._session = requests.Session()
-            self._session.headers.update({"User-Agent": _UA})
+            with self._lock:
+                if self._session is None:  # re-check inside the lock — build exactly once
+                    session = requests.Session()
+                    session.headers.update({"User-Agent": _UA})
+                    self._session = session
         resp = self._session.get(url, headers={"Referer": "https://www.nseindia.com/"}, timeout=20)
         resp.raise_for_status()
         return resp.text

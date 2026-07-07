@@ -1,6 +1,11 @@
 """Upside comes only from TimesFM — no formulaic fallback (raises when unavailable)."""
 from __future__ import annotations
 
+import sys
+import threading
+import time
+import types
+
 import pytest
 
 import services.forecasting.forecasting_service as fs
@@ -40,3 +45,167 @@ def test_uses_timesfm_when_available(monkeypatch):
     out = svc.forecast_from_prices("SBIN", [100, 101, 102], horizon=5)
     assert out["provider_mode"] == "timesfm_2p5_200m_pytorch"
     assert out["predicted_return"] == round((110.0 - 102) / 102, 6)  # from TimesFM pts, not momentum
+
+
+def test_forecast_from_prices_does_not_write_files_by_default(monkeypatch, tmp_path):
+    """Per-symbol disk I/O (state/raw/ohlcv/*.json) is a hot-path cost paid on every
+    ThreadPoolExecutor call — it must be opt-in (FORECAST_DUMP=1), not on by default."""
+    monkeypatch.setattr(fs, "ENABLE_TIMESFM", True)
+    monkeypatch.setattr(fs, "_load_timesfm", lambda: True)
+    monkeypatch.setattr(fs, "FORECAST_DUMP", False)
+    monkeypatch.setattr(fs, "_ROOT", tmp_path)
+    svc = TimesFMForecastingService()
+
+    def _fake_tf(ticker, series, horizon, closes):
+        return {"ticker": ticker.upper(), "provider_mode": "timesfm_2p5_200m_pytorch",
+                "horizon": horizon, "forecast": [110.0] * horizon,
+                "quantiles": {"p10": [], "p50": [], "p90": []},
+                "direction": "up", "confidence": 0.7}
+    monkeypatch.setattr(svc, "_timesfm_forecast", _fake_tf)
+    svc.forecast_from_prices("SBIN", [100, 101, 102], horizon=5)
+    assert not (tmp_path / "state" / "raw" / "ohlcv").exists()
+
+
+def test_forecast_from_prices_writes_files_when_opted_in(monkeypatch, tmp_path):
+    monkeypatch.setattr(fs, "ENABLE_TIMESFM", True)
+    monkeypatch.setattr(fs, "_load_timesfm", lambda: True)
+    monkeypatch.setattr(fs, "FORECAST_DUMP", True)
+    monkeypatch.setattr(fs, "_ROOT", tmp_path)
+    svc = TimesFMForecastingService()
+
+    def _fake_tf(ticker, series, horizon, closes):
+        return {"ticker": ticker.upper(), "provider_mode": "timesfm_2p5_200m_pytorch",
+                "horizon": horizon, "forecast": [110.0] * horizon,
+                "quantiles": {"p10": [], "p50": [], "p90": []},
+                "direction": "up", "confidence": 0.7}
+    monkeypatch.setattr(svc, "_timesfm_forecast", _fake_tf)
+    svc.forecast_from_prices("SBIN", [100, 101, 102], horizon=5)
+    raw_dir = tmp_path / "state" / "raw" / "ohlcv"
+    assert list(raw_dir.glob("SBIN_timesfm_*.json")), "expected dump files under FORECAST_DUMP=1"
+
+
+# ---------------------------------------------------------------------------
+# _load_timesfm() thread-safety — two threads must not both from_pretrained+compile
+# ---------------------------------------------------------------------------
+
+def test_load_timesfm_is_thread_safe_single_load(monkeypatch):
+    monkeypatch.setattr(fs, "_timesfm_model", None)
+    monkeypatch.setattr(fs, "_timesfm_error", None)
+
+    load_calls: list[str] = []
+
+    class _FakeModel:
+        def compile(self, cfg):
+            pass
+
+    class _FakeTimesFMCls:
+        @staticmethod
+        def from_pretrained(name):
+            load_calls.append(name)
+            time.sleep(0.05)  # widen the race window so an unlocked version would double-load
+            return _FakeModel()
+
+    fake_timesfm_module = types.SimpleNamespace(
+        TimesFM_2p5_200M_torch=_FakeTimesFMCls,
+        ForecastConfig=lambda **kw: kw,
+    )
+    fake_torch_module = types.ModuleType("torch")
+
+    monkeypatch.setitem(sys.modules, "timesfm", fake_timesfm_module)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch_module)
+
+    threads = [threading.Thread(target=fs._load_timesfm) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(load_calls) == 1, "from_pretrained must be called exactly once under concurrent load"
+    assert fs._timesfm_model is not None
+
+
+# ---------------------------------------------------------------------------
+# Quantile-spread confidence — same point forecast, different q10/q90 band width
+# ---------------------------------------------------------------------------
+
+def test_confidence_reduced_by_wide_quantile_spread(monkeypatch):
+    """A tight q10/q90 band and a wide one around the SAME point forecast must not
+    produce identical confidence — the wide band signals more model uncertainty."""
+    monkeypatch.setattr(fs, "ENABLE_TIMESFM", True)
+    monkeypatch.setattr(fs, "_load_timesfm", lambda: True)
+
+    def _make_fake_model(q10_val, q90_val):
+        class _FakeModel:
+            @staticmethod
+            def forecast(horizon, inputs):
+                import numpy as np
+                point = np.array([[103.0] * horizon])
+                quantiles = np.zeros((1, horizon, 10))
+                quantiles[0, :, 5] = 103.0  # q50
+                quantiles[0, :, 1] = q10_val
+                quantiles[0, :, 9] = q90_val
+                return point, quantiles
+        return _FakeModel()
+
+    svc = TimesFMForecastingService()
+    closes = [100.0] * 9 + [100.0]
+
+    monkeypatch.setattr(fs, "_timesfm_model", _make_fake_model(102.5, 103.5))  # tight band
+    tight = svc._timesfm_forecast("SBIN", {"close": closes}, 5, closes)
+
+    monkeypatch.setattr(fs, "_timesfm_model", _make_fake_model(90.0, 116.0))  # wide band
+    wide = svc._timesfm_forecast("SBIN", {"close": closes}, 5, closes)
+
+    assert tight["forecast"] == wide["forecast"]  # same point forecast
+    assert tight["confidence"] > wide["confidence"], (
+        "wide q10-q90 band must reduce confidence relative to a tight band at the same point forecast"
+    )
+    # Multiplicative combine: a wide band must PENALIZE meaningfully, not average away.
+    assert wide["confidence"] < 0.3, f"wide band should collapse confidence, got {wide['confidence']}"
+
+
+def test_weak_magnitude_tight_band_not_inflated(monkeypatch):
+    """A weak-magnitude forecast (point barely above last_close) with a TIGHT band must NOT
+    be lifted above the F2 news-override weak-confidence threshold (~0.55). Multiplicative
+    combine keeps a weak magnitude weak; the additive average would have inflated it."""
+    monkeypatch.setattr(fs, "ENABLE_TIMESFM", True)
+    monkeypatch.setattr(fs, "_load_timesfm", lambda: True)
+
+    class _FakeModel:
+        @staticmethod
+        def forecast(horizon, inputs):
+            import numpy as np
+            point = np.array([[100.4] * horizon])          # +0.4% → weak magnitude
+            quantiles = np.zeros((1, horizon, 10))
+            quantiles[0, :, 5] = 100.4                       # q50
+            quantiles[0, :, 1] = 99.9                        # tight band (~1% of price)
+            quantiles[0, :, 9] = 100.9
+            return point, quantiles
+
+    monkeypatch.setattr(fs, "_timesfm_model", _FakeModel())
+    svc = TimesFMForecastingService()
+    closes = [100.0] * 10
+    out = svc._timesfm_forecast("SBIN", {"close": closes}, 5, closes)
+    assert out["confidence"] <= 0.55, (
+        f"weak forecast with a tight band must stay weak (<=0.55), got {out['confidence']}"
+    )
+
+
+def test_interval_confidence_helper_directly():
+    from services.forecasting.forecasting_service import _interval_confidence
+
+    tight = _interval_confidence(100.0, [99.5], [100.5])   # 1% band
+    wide = _interval_confidence(100.0, [95.0], [105.0])    # 10% band → k=0.10 drives to ~0
+    assert tight > wide
+    assert wide < 0.1, "a 10% band should nearly zero out interval confidence at k=0.10"
+    assert 0.0 <= wide <= 1.0
+    assert 0.0 <= tight <= 1.0
+
+
+def test_interval_confidence_neutral_when_quantiles_missing():
+    from services.forecasting.forecasting_service import _interval_confidence
+
+    # Absent band data is least trustworthy → neutral 0.5, never max 1.0.
+    assert _interval_confidence(100.0, [], []) == 0.5
+    assert _interval_confidence(100.0, [99.0], []) == 0.5
+    assert _interval_confidence(0.0, [99.0], [101.0]) == 0.5

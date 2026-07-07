@@ -36,6 +36,8 @@ class ExpectedUpsideGate(EntryGate):
         self._max_horizon_days: float | None = float(max_h) if max_h is not None else None
 
     def evaluate(self, signal: dict) -> tuple[bool, str | None]:
+        if str(signal.get("trade", "")).upper() != "CALL":
+            return True, None  # only BUYs need an expected-upside floor; PUT/HOLD pass
         ticker = str(signal.get("ticker", "")).upper()
         horizon = str(signal.get("horizon", "1d"))
         # expected_move_pct is a FRACTION from the strategy engine (e.g. 0.02 == 2%).

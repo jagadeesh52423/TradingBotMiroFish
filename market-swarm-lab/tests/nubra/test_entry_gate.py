@@ -69,21 +69,21 @@ class TestExpectedUpsideGateEvaluate:
     def test_allows_when_upside_meets_threshold(self):
         gate = _make_gate(min_pct=2.0)
         # expected_move_pct is a FRACTION (0.02 == 2%). Meets the 2.0% threshold.
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.02, "horizon": "1d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.02, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is True
         assert reason is None
 
     def test_allows_when_upside_exceeds_threshold(self):
         gate = _make_gate(min_pct=2.0)
         # 3% move (fraction 0.03) > 2.0% threshold
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.03, "horizon": "1d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.03, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is True
         assert reason is None
 
     def test_blocks_when_upside_below_threshold(self):
         gate = _make_gate(min_pct=2.0)
         # 1% move (fraction 0.01) < 2.0% threshold
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.01, "horizon": "1d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.01, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is False
         assert reason is not None
         assert "1.00%" in reason
@@ -91,7 +91,7 @@ class TestExpectedUpsideGateEvaluate:
 
     def test_block_reason_includes_horizon(self):
         gate = _make_gate(min_pct=2.0)
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.005, "horizon": "3d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.005, "horizon": "3d", "ticker": "SBIN"})
         assert allowed is False
         assert "3d" in reason
 
@@ -99,7 +99,7 @@ class TestExpectedUpsideGateEvaluate:
         # SBIN requires 3.5% instead of the global 2.0%
         gate = _make_gate(min_pct=2.0, per_symbol={"SBIN": 3.5})
         # 2.5% move passes global but fails SBIN override
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.025, "horizon": "1d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.025, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is False
         assert "3.50%" in reason
 
@@ -107,20 +107,20 @@ class TestExpectedUpsideGateEvaluate:
         # RELIANCE only needs 1.0% (e.g., liquid stock)
         gate = _make_gate(min_pct=2.0, per_symbol={"RELIANCE": 1.0})
         # 1.5% move (0.015) — fails global 2.0% but passes RELIANCE 1.0%
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.015, "horizon": "1d", "ticker": "RELIANCE"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.015, "horizon": "1d", "ticker": "RELIANCE"})
         assert allowed is True
         assert reason is None
 
     def test_per_symbol_key_lookup_is_case_insensitive(self):
         # Config may have uppercase key; signal ticker may be any case.
         gate = _make_gate(min_pct=2.0, per_symbol={"SBIN": 1.0})
-        allowed, _ = gate.evaluate({"expected_move_pct": 0.015, "horizon": "1d", "ticker": "sbin"})
+        allowed, _ = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.015, "horizon": "1d", "ticker": "sbin"})
         assert allowed is True
 
     def test_max_horizon_days_blocks_long_horizon(self):
         gate = _make_gate(min_pct=2.0, max_horizon_days=2.0)
         # "5d" = 5 days > 2.0 max_horizon_days
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.05, "horizon": "5d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "5d", "ticker": "SBIN"})
         assert allowed is False
         assert reason is not None
         assert "5d" in reason
@@ -128,28 +128,28 @@ class TestExpectedUpsideGateEvaluate:
     def test_max_horizon_days_allows_within_cap(self):
         gate = _make_gate(min_pct=2.0, max_horizon_days=5.0)
         # "3d" = 3 days <= 5.0 max; 5% upside passes
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.05, "horizon": "3d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "3d", "ticker": "SBIN"})
         assert allowed is True
         assert reason is None
 
     def test_max_horizon_days_none_means_no_cap(self):
         gate = _make_gate(min_pct=2.0, max_horizon_days=None)
         # "5d" with no cap — only upside gate applies
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.05, "horizon": "5d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "5d", "ticker": "SBIN"})
         assert allowed is True
         assert reason is None
 
     def test_horizon_hours_parsed_to_fraction_of_day(self):
         gate = _make_gate(min_pct=2.0, max_horizon_days=0.5)
         # "1h" = 1/24 days ≈ 0.042 <= 0.5 max; upside fine
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.05, "horizon": "1h", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "1h", "ticker": "SBIN"})
         assert allowed is True
         assert reason is None
 
     def test_horizon_hours_blocked_by_day_cap(self):
         gate = _make_gate(min_pct=2.0, max_horizon_days=0.01)
         # "1h" = 0.042 days > 0.01 max
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.05, "horizon": "1h", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "1h", "ticker": "SBIN"})
         assert allowed is False
         assert "1h" in reason
 
@@ -157,7 +157,7 @@ class TestExpectedUpsideGateEvaluate:
         # Confirm the gate treats expected_move_pct as a FRACTION, not a percent.
         # 0.025 fraction = 2.5% move. Should pass a 2.0% threshold.
         gate = _make_gate(min_pct=2.0)
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.025, "horizon": "1d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.025, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is True, (
             "0.025 is a fraction (2.5%) and must pass a 2.0% threshold — "
             "gate must multiply by 100 before comparing"
@@ -166,7 +166,7 @@ class TestExpectedUpsideGateEvaluate:
     def test_unit_normalization_blocks_when_fraction_is_tiny(self):
         # 0.005 fraction = 0.5% move. Must fail a 2.0% threshold.
         gate = _make_gate(min_pct=2.0)
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.005, "horizon": "1d", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.005, "horizon": "1d", "ticker": "SBIN"})
         assert allowed is False, "0.005 fraction = 0.5%, below 2.0% threshold"
 
     def test_unknown_horizon_suffix_raises_when_cap_set(self):
@@ -174,19 +174,38 @@ class TestExpectedUpsideGateEvaluate:
         # With a cap configured, a bad suffix must still raise so the caller knows it's invalid.
         gate = _make_gate(min_pct=2.0, max_horizon_days=5.0)
         with pytest.raises(ValueError, match="Unrecognised horizon format"):
-            gate.evaluate({"expected_move_pct": 0.05, "horizon": "1w", "ticker": "SBIN"})
+            gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "1w", "ticker": "SBIN"})
 
     def test_non_numeric_horizon_raises_when_cap_set(self):
         gate = _make_gate(min_pct=2.0, max_horizon_days=5.0)
         with pytest.raises(ValueError, match="Unrecognised horizon format"):
-            gate.evaluate({"expected_move_pct": 0.05, "horizon": "abcd", "ticker": "SBIN"})
+            gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "abcd", "ticker": "SBIN"})
 
     def test_no_cap_bad_horizon_is_silent(self):
         # F3 (lazy parse): with no cap, an unparseable horizon must NOT raise —
         # the upside gate never needs to know the numeric horizon length.
         gate = _make_gate(min_pct=2.0, max_horizon_days=None)
-        allowed, reason = gate.evaluate({"expected_move_pct": 0.05, "horizon": "1w", "ticker": "SBIN"})
+        allowed, reason = gate.evaluate({"trade": "CALL", "expected_move_pct": 0.05, "horizon": "1w", "ticker": "SBIN"})
         assert allowed is True  # 5% upside passes 2% gate; horizon irrelevant
+
+    def test_put_bypasses_gate_even_with_positive_threshold(self):
+        # F1 fix: ExpectedUpsideGate must guard on trade=="CALL" like every other gate.
+        # A PUT (sell-to-close) has expected_move_pct == 0.0 from the strategy engine, which
+        # would otherwise strand it below any positive threshold.
+        gate = _make_gate(min_pct=5.0)
+        allowed, reason = gate.evaluate(
+            {"trade": "PUT", "expected_move_pct": 0.0, "horizon": "1d", "ticker": "SBIN"}
+        )
+        assert allowed is True
+        assert reason is None
+
+    def test_hold_bypasses_gate_even_with_positive_threshold(self):
+        gate = _make_gate(min_pct=5.0)
+        allowed, reason = gate.evaluate(
+            {"trade": "HOLD", "expected_move_pct": 0.0, "horizon": "1d", "ticker": "SBIN"}
+        )
+        assert allowed is True
+        assert reason is None
 
 
 # ---------------------------------------------------------------------------

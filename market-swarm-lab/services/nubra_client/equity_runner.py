@@ -48,12 +48,14 @@ from services.forecasting.forecasting_service import TimesFMForecastingService, 
 _log = logging.getLogger(__name__)
 _CONFIG_PATH = _ROOT / "config" / "nubra_config.json"
 
-# Maps EquitySignalBuilder direction labels to MiroFish local-formula direction keys.
-_TRADE_TO_FORECAST_DIR: dict[str, str] = {
-    "bullish": "up",
-    "bearish": "down",
-    "neutral": "sideways",
-}
+# Empty/None shapes returned by the advisory soft-flag helpers when their data source is
+# absent OR raises — an advisory flag failing must never turn a symbol into status=error.
+_EMPTY_DELIVERY_FLAG = {"delivery_conviction": None, "delivery_pct": None, "delivery_trailing_avg": None}
+_EMPTY_FNO_FLAG = {"pcr": None, "pcr_label": None, "call_oi": None, "put_oi": None, "fno_available": None}
+_EMPTY_PRE_OPEN_FLAG = {"pre_open_gap_pct": None, "pre_open_qty": None, "pre_open_iep": None,
+                         "pre_open_conviction": None}
+_EMPTY_DEALS_FLAG = {"has_deal": None}
+_EMPTY_PROMOTER_FLAG = {"trend": None}
 
 
 class NubraEquityRunner:
@@ -203,27 +205,34 @@ class NubraEquityRunner:
 
     # ----------------------------------------------------------------- private
 
+    def _safe_flag(self, fn, symbol: str, default: dict) -> dict:
+        """Call an advisory soft-flag helper/collector method; any exception falls back to
+        its empty/None shape instead of propagating — an advisory flag is never allowed to
+        turn a symbol's whole result into status=error."""
+        try:
+            return fn(symbol)
+        except Exception as exc:
+            _log.warning("%s | soft flag %s failed: %s", symbol, getattr(fn, "__name__", fn), exc)
+            return default
+
     def _pre_open_flag(self, symbol: str) -> dict:
         """§3/§11 soft pre-open conviction: indicative gap + book qty. Never gates."""
-        empty = {"pre_open_gap_pct": None, "pre_open_qty": None, "pre_open_iep": None,
-                 "pre_open_conviction": None}
         if self._preopen is None:
-            return empty
+            return _EMPTY_PRE_OPEN_FLAG
         st = self._preopen.status(symbol)
         if not st:
-            return empty
+            return _EMPTY_PRE_OPEN_FLAG
         return {"pre_open_gap_pct": st.get("gap_pct"), "pre_open_qty": st.get("qty"),
                 "pre_open_iep": st.get("iep"),
                 "pre_open_conviction": pre_open_conviction(st.get("gap_pct"), st.get("qty"), self._preopen_cfg)}
 
     def _fno_flag(self, symbol: str) -> dict:
         """§8 descriptive F&O positioning: PCR + call/put OI + availability. Never gates."""
-        empty = {"pcr": None, "pcr_label": None, "call_oi": None, "put_oi": None, "fno_available": None}
         if self._option_provider is None:
-            return empty
+            return _EMPTY_FNO_FLAG
         s = self._option_provider.summary(symbol)
         if not s:
-            return {**empty, "fno_available": False}
+            return {**_EMPTY_FNO_FLAG, "fno_available": False}
         return {"pcr": s["pcr"], "pcr_label": pcr_label(s["pcr"]),
                 "call_oi": s["call_oi"], "put_oi": s["put_oi"], "fno_available": True,
                 "call_oi_change": s.get("call_oi_change"), "put_oi_change": s.get("put_oi_change"),
@@ -251,7 +260,7 @@ class NubraEquityRunner:
         """Soft delivery-% conviction (§8): 'high' if today's deliv% >= its trailing avg (real
         accumulation), else 'low'; None fields when the collector has no figure. Never blocks."""
         if self._delivery is None:
-            return {"delivery_conviction": None, "delivery_pct": None, "delivery_trailing_avg": None}
+            return _EMPTY_DELIVERY_FLAG
         from datetime import datetime, timedelta, timezone
         on = datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
         deliv = self._delivery.deliv_pct(symbol, on)
@@ -366,20 +375,17 @@ class NubraEquityRunner:
                     "ltp": ltp, "provider_modes": {"timesfm": "unavailable"},
                     "status": "skipped", "skip_reason": "no_forecast",
                 }
-            sim_request = {
-                "documents": nse_result["documents"],
-                "forecast_summary": {
-                    "direction": _TRADE_TO_FORECAST_DIR.get(forecast["direction"], "sideways"),
-                    "confidence": forecast["confidence"],
-                },
-                "personas_config": [],
-                "scenario": "equity_trend_daily",
-            }
-            simulation = self._mirofish.simulate(sim_request)
+            # MiroFish simulation is intentionally NOT run: since the confidence blend dropped
+            # the sim leg (it double-counted the forecast+NSE the sim was itself fed), and the
+            # only forecast-using strategy (BlendedSignalStrategy) takes direction from the
+            # forecast — not the sim — the per-symbol simulate() call was pure wasted compute in
+            # the ThreadPoolExecutor hot path, feeding only a provider_mode label. Pass None
+            # (a documented valid input to build()) and label the mode "skipped_unused".
+            simulation = None
             signal = self._strategy.build(symbol, context, forecast, simulation, nse_result)
             provider_modes = {
                 "timesfm": forecast.get("provider_mode"),
-                "mirofish": simulation.get("provider_mode"),
+                "mirofish": "skipped_unused",
                 "nse": nse_result.get("provider_mode"),
             }
 
@@ -420,10 +426,21 @@ class NubraEquityRunner:
             if forecast is not None
             else None
         )
-        delivery_flag = self._delivery_flag(symbol)  # computed once, reused by watchlist below
-        fno_flag = self._fno_flag(symbol)
+        # Soft/advisory flags — each wrapped so a failing data source degrades to its empty
+        # shape rather than failing the whole symbol (an advisory flag is never a hard gate).
+        delivery_flag = self._safe_flag(self._delivery_flag, symbol, _EMPTY_DELIVERY_FLAG)  # computed once, reused by watchlist below
+        fno_flag = self._safe_flag(self._fno_flag, symbol, _EMPTY_FNO_FLAG)
         # F&O availability feeds the §2 watchlist factor (set before _watchlist runs).
         signal["fno_factor"] = 1.0 if fno_flag.get("fno_available") else None
+        pre_open_flag = self._safe_flag(self._pre_open_flag, symbol, _EMPTY_PRE_OPEN_FLAG)
+        # computed once — reused for both the "deals" flag and catalyst stacking below.
+        deals_flag = (
+            self._safe_flag(self._deals.flag, symbol, _EMPTY_DEALS_FLAG) if self._deals else _EMPTY_DEALS_FLAG
+        )
+        promoter_flag = (
+            self._safe_flag(self._shareholding.promoter_flag, symbol, _EMPTY_PROMOTER_FLAG)
+            if self._shareholding else _EMPTY_PROMOTER_FLAG
+        )
         base = {
             "symbol": symbol,
             "signal": signal,
@@ -439,13 +456,13 @@ class NubraEquityRunner:
             # §8/§3 soft conviction flags (advisory, never gates).
             **delivery_flag,
             "fno": fno_flag,
-            "pre_open": self._pre_open_flag(symbol),
+            "pre_open": pre_open_flag,
             # §7/§8 bulk/block institutional deals (soft — feeds stacking, never gates).
-            "deals": self._deals.flag(symbol) if self._deals else {"has_deal": None},
+            "deals": deals_flag,
             # §9 promoter-stake trend (soft, quarterly).
-            "promoter": self._shareholding.promoter_flag(symbol) if self._shareholding else {"trend": None},
+            "promoter": promoter_flag,
             # §7 catalyst stacking — distinct sources firing for this symbol.
-            "catalyst_stack": _catalyst_stack(nse_result, self._deals.flag(symbol) if self._deals else None),
+            "catalyst_stack": _catalyst_stack(nse_result, deals_flag),
             # §2 watchlist ranking score + factor breakdown.
             "watchlist": self._watchlist(symbol, nse_result, signal, delivery_flag.get("delivery_pct")),
             # §5 scale-out targets (advisory) — CALL entries only.

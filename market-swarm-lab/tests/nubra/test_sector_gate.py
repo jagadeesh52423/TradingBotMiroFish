@@ -34,6 +34,36 @@ def test_trend_none_on_fetch_error():
     assert prov.trend("SBIN") is None
 
 
+def test_trend_caches_closes_per_index_across_symbols():
+    # A run maps many symbols to a handful of shared sector indices; the provider must
+    # fetch each index's closes at most once, not once per symbol per call.
+    calls = []
+
+    def closes_fn(idx):
+        calls.append(idx)
+        return [100 + i for i in range(20)]
+
+    sector_map = {"SBIN": "NSE:NIFTYBANK-INDEX", "HDFCBANK": "NSE:NIFTYBANK-INDEX"}
+    prov = SectorTrendProvider(sector_map, closes_fn, 20, 10)
+    prov.trend("SBIN")
+    prov.trend("HDFCBANK")
+    prov.trend("SBIN")
+    assert calls == ["NSE:NIFTYBANK-INDEX"]  # one live fetch, reused for both symbols
+
+
+def test_trend_memoizes_fetch_failure_too():
+    calls = []
+
+    def closes_fn(idx):
+        calls.append(idx)
+        raise RuntimeError("throttled")
+
+    prov = SectorTrendProvider(_MAP, closes_fn)
+    prov.trend("SBIN")
+    prov.trend("SBIN")
+    assert len(calls) == 1  # failure memoized, not retried every call
+
+
 def _call(ticker="SBIN"):
     return {"trade": "CALL", "ticker": ticker}
 

@@ -159,7 +159,10 @@ class FyersDataProvider(MarketDataProvider):
     def _fetch_bars(self, symbol: str, interval: str, lookback: int) -> list[dict]:
         """Recent full OHLCV bars, oldest-first, at most `lookback` (trailing today)."""
         resolution = _RESOLUTION.get(interval, "1D")
-        end = datetime.now(timezone.utc).date()
+        # IST, not UTC: Fyers stamps daily candles at 00:00 IST, and NSE trades in IST —
+        # a UTC "today" can be one calendar day behind IST for ~5.5h each evening, which
+        # would silently exclude today's just-closed session. Matches FyersPriceSource.daily_bars.
+        end = datetime.now(tz=_IST).date()
         start = end - timedelta(days=_calendar_days(resolution, lookback))
         return self._history(symbol, resolution, start, end)[-lookback:]
 
@@ -274,11 +277,15 @@ def _extract_circuit(response: dict, symbol: str) -> dict | None:
     if last is None or not upper:
         return None  # can't judge proximity without last + a real upper band
     lower = _first(row, _LOWER_CKT_KEYS)
+    # `c` is the previous close — the actual base the circuit band % is computed off,
+    # not the (possibly already-moved) intraday `ltp`. None when the row omits it.
+    base = row.get("c")
     return {
         "last": float(last),
         "upper": float(upper),
         "lower": float(lower) if lower else None,
         "band": None,
+        "base": float(base) if base else None,
     }
 
 
@@ -324,14 +331,19 @@ class _FakeFyersClient:
 
     _DAILY_CAP_DAYS = 366
 
-    def __init__(self, candles: list[list] | None, ltp: float = 100.5) -> None:
+    def __init__(self, candles: list[list] | None, ltp: float = 100.5, depth_row: dict | None = None) -> None:
         self._candles = candles
         self._ltp = ltp
+        self._depth_row = depth_row
         self.requests: list[dict] = []
 
     @property
     def last_request(self) -> dict | None:
         return self.requests[-1] if self.requests else None
+
+    def depth(self, request: dict) -> dict:
+        row = self._depth_row or {}
+        return {"s": "ok", "d": {request["symbol"]: row}}
 
     def history(self, request: dict) -> dict:
         self.requests.append(request)
@@ -387,6 +399,10 @@ def _self_check() -> None:
     assert bars[0] == {"timestamp": epoch0 * 1000, "open": 10.0, "high": 12.0,
                        "low": 9.0, "close": 11.0, "volume": 100.0}
 
+    # _fetch_bars must use the IST "today" (matches FyersPriceSource.daily_bars), not UTC —
+    # a UTC end-date can be one calendar day behind IST, silently excluding today's session.
+    assert fake.last_request["range_to"] == datetime.now(tz=_IST).date().strftime("%Y-%m-%d")
+
     # historical(): back-compat — exactly {"close", "timestamp"}, same close series.
     hist = provider.historical("RELIANCE", "1d", 5)
     assert hist[0] == {"close": 11.0, "timestamp": epoch0 * 1000}
@@ -431,6 +447,20 @@ def _self_check() -> None:
 
     # current_price extracts v.lp as Decimal.
     assert provider.current_price("RELIANCE") == Decimal("100.5")
+
+    # circuit(): depth() row -> {'last','upper','lower','band','base'}. `c` (prev close) is
+    # the BASE the circuit band is computed off, distinct from `ltp` (intraday last).
+    circuit_client = _FakeFyersClient(
+        None, depth_row={"ltp": 108.0, "upper_ckt": 110.0, "lower_ckt": 90.0, "c": 100.0})
+    circuit_provider = FyersDataProvider("cid", "tok", client=circuit_client)
+    circuit = circuit_provider.circuit("RELIANCE")
+    assert circuit == {"last": 108.0, "upper": 110.0, "lower": 90.0, "band": None, "base": 100.0}
+
+    # base absent from the depth row -> None (fail-open shape, never a wrong number).
+    no_base_client = _FakeFyersClient(
+        None, depth_row={"ltp": 108.0, "upper_ckt": 110.0, "lower_ckt": 90.0})
+    no_base_circuit = FyersDataProvider("cid", "tok", client=no_base_client).circuit("RELIANCE")
+    assert no_base_circuit["base"] is None
 
     # FyersPriceSource adapter: {date, close, volume}, ms->IST date, oldest-first. Assert the
     # earliest bar's date against the independent literal (2024-06-20), NOT the impl's own tz.

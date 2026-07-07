@@ -24,6 +24,8 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 _log = logging.getLogger(__name__)
 
+_IST = timezone(timedelta(hours=5, minutes=30))  # fixed offset, matching catalyst_discovery._ist_today
+
 _NSE_HOME = "https://www.nseindia.com"
 _NSE_API = (
     "https://www.nseindia.com/api/corporate-announcements"
@@ -174,7 +176,9 @@ class NseAnnouncementsCollector:
     def _fetch(self, symbol: str) -> list[dict]:
         if not self._primed:
             self._prime_session()
-        now = datetime.now(timezone.utc)
+        # IST, not UTC: between 00:00-05:30 IST, the UTC calendar day still lags IST by
+        # one, so a UTC `now` would exclude today's (IST) filings from the window.
+        now = datetime.now(_IST)
         from_d = (now - timedelta(days=self._lookback_days)).strftime("%d-%m-%Y")
         to_d = now.strftime("%d-%m-%Y")
         url = _NSE_API.format(symbol=symbol, from_d=from_d, to_d=to_d)

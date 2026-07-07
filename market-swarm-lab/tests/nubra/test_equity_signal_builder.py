@@ -81,8 +81,11 @@ class TestSignalFields:
         signal = EquitySignalBuilder().build("sbin", _forecast(), _simulation())
         assert signal["ticker"] == "SBIN"
 
-    def test_horizon_is_1d(self):
-        assert self._sig()["horizon"] == "1d"
+    def test_horizon_is_5d(self):
+        # Runner calls forecast_from_prices(..., horizon=5) — TimesFM forecasts 5 sessions
+        # ahead, so the label must say "5d" (a "1d" label was the horizon-mislabel bug: the
+        # ExpectedUpsideGate threshold is meant to read as "min 5-day upside").
+        assert self._sig()["horizon"] == "5d"
 
     def test_signal_id_is_uuid_string(self):
         import uuid
@@ -101,63 +104,71 @@ class TestSignalFields:
 
 
 # ---------------------------------------------------------------------------
-# Confidence blending (no NSE) — weights from _DEFAULTS["no_nse"]
+# Confidence blending (no NSE) — sim_conf leg removed (double-counts forecast+news
+# via MiroFish, which is itself fed the forecast direction/confidence + NSE docs).
+# With no nse_result, confidence is TimesFM confidence, unchanged by the sim score.
 # ---------------------------------------------------------------------------
 
 class TestConfidenceBlendNoNse:
-    def test_blend_formula_weights(self):
-        # Derive expected from the published defaults so a config change propagates automatically.
-        tf_w = _DEFAULTS["no_nse"]["tf"]
-        sim_w = _DEFAULTS["no_nse"]["sim"]
-        sim_conf = (10.5 + 100) / 200   # outlook=10.5 → 0.5525
-        expected = round(0.72 * tf_w + sim_conf * sim_w, 4)
+    def test_no_nse_confidence_equals_tf_confidence(self):
+        # sim_conf dropped from the blend → confidence passes through tf_conf untouched,
+        # regardless of the (now-irrelevant) MiroFish outlook score.
         sim = _simulation(outlook_score=10.5)
         signal = EquitySignalBuilder().build("SBIN", _forecast(confidence=0.72), sim)
-        assert signal["confidence"] == pytest.approx(expected, abs=1e-4)
+        assert signal["confidence"] == pytest.approx(0.72, abs=1e-4)
 
     def test_confidence_clamped_between_0_and_1(self):
-        # extreme positive outlook → sim_conf approaches 1.0
         sim_extreme = _simulation(outlook_score=100.0)
         sig = EquitySignalBuilder().build("SBIN", _forecast(confidence=0.95), sim_extreme)
         assert 0.0 <= sig["confidence"] <= 1.0
 
     def test_confidence_clamped_low(self):
-        # extreme negative outlook → sim_conf approaches 0.0
         sim_low = _simulation(outlook_score=-100.0)
         sig = EquitySignalBuilder().build("SBIN", _forecast(confidence=0.5), sim_low)
         assert 0.0 <= sig["confidence"] <= 1.0
 
-    def test_missing_outlook_score_defaults_to_neutral(self):
-        # simulation without outlook_score → 0 → sim_conf = 0.5
-        tf_w = _DEFAULTS["no_nse"]["tf"]
-        sim_w = _DEFAULTS["no_nse"]["sim"]
-        expected = round(0.6 * tf_w + 0.5 * sim_w, 4)
-        sim_no_score = {"final_direction": "bullish"}
-        signal = EquitySignalBuilder().build("SBIN", _forecast(confidence=0.6), sim_no_score)
-        assert signal["confidence"] == pytest.approx(expected, abs=1e-4)
+    def test_outlook_score_no_longer_moves_no_nse_confidence(self):
+        # A wildly bearish MiroFish outlook must NOT move confidence when there's no NSE
+        # result — sim_conf is no longer a confidence input at all.
+        sim_bearish = {"final_direction": "bearish", "outlook_score": -80.0}
+        sim_bullish = {"final_direction": "bullish", "outlook_score": 80.0}
+        fc = _forecast(confidence=0.6)
+        sig_bearish = EquitySignalBuilder().build("SBIN", fc, sim_bearish)
+        sig_bullish = EquitySignalBuilder().build("SBIN", fc, sim_bullish)
+        assert sig_bearish["confidence"] == sig_bullish["confidence"] == pytest.approx(0.6, abs=1e-4)
 
 
 # ---------------------------------------------------------------------------
-# Confidence blending (with NSE) — weights from _DEFAULTS["with_nse"]
+# Confidence blending (with NSE) — 2-way tf/nse blend, sim leg removed and the
+# remaining tf/nse weights renormalized to sum to 1 (fixes the latent bug where a
+# partial config override wouldn't sum to 1 once sim is out of the picture).
 # ---------------------------------------------------------------------------
 
 class TestConfidenceBlendWithNse:
     def _nse(self, sentiment_score=0.3):
         return {"sentiment_score": sentiment_score, "provider_mode": "nse_live"}
 
-    def test_three_pillar_blend_formula(self):
-        # Derive expected value from published defaults — no hardcoded numerics.
+    def test_two_pillar_blend_formula(self):
+        # Derive expected value from published defaults — no hardcoded numerics. sim_w is
+        # intentionally excluded from the denominator: only tf/nse are renormalized to 1.
         tf_w = _DEFAULTS["with_nse"]["tf"]
-        sim_w = _DEFAULTS["with_nse"]["sim"]
         nse_w = _DEFAULTS["with_nse"]["nse"]
-        sim_conf = (10.5 + 100) / 200      # 0.5525
+        total_w = tf_w + nse_w
         nse_conf = (0.3 + 1) / 2           # 0.65
-        expected = round(0.72 * tf_w + sim_conf * sim_w + nse_conf * nse_w, 4)
-        sim = _simulation(outlook_score=10.5)
+        expected = round(0.72 * (tf_w / total_w) + nse_conf * (nse_w / total_w), 4)
+        sim = _simulation(outlook_score=10.5)  # accepted but no longer affects confidence
         signal = EquitySignalBuilder().build(
             "SBIN", _forecast(confidence=0.72), sim, nse_result=self._nse(0.3)
         )
         assert signal["confidence"] == pytest.approx(expected, abs=1e-4)
+
+    def test_sim_score_does_not_move_with_nse_confidence(self):
+        # A wildly different MiroFish outlook must not change the with-NSE blend either.
+        fc = _forecast(confidence=0.72)
+        nse = self._nse(0.3)
+        sig_a = EquitySignalBuilder().build("SBIN", fc, _simulation(outlook_score=-90.0), nse_result=nse)
+        sig_b = EquitySignalBuilder().build("SBIN", fc, _simulation(outlook_score=90.0), nse_result=nse)
+        assert sig_a["confidence"] == sig_b["confidence"]
 
     def test_negative_nse_sentiment_lowers_confidence(self):
         nse_bearish = self._nse(-0.8)
@@ -177,12 +188,14 @@ class TestConfidenceBlendWithNse:
         sig_neut = EquitySignalBuilder().build("SBIN", forecast, sim, nse_result=nse_neutral)
         assert sig_bull["confidence"] > sig_neut["confidence"]
 
-    def test_nse_result_none_uses_two_pillar_blend(self):
-        # Two-pillar and three-pillar use different weight sets → different results.
-        sim = _simulation(outlook_score=10.0)  # sim_conf=0.55
+    def test_nse_result_none_uses_tf_only_confidence(self):
+        # No NSE result → confidence is tf_conf alone (0.60). With NSE (even neutral, 0.0
+        # sentiment → nse_conf=0.5) it blends in the nse leg → a different value.
+        sim = _simulation(outlook_score=10.0)
         fc = _forecast(confidence=0.60)
         sig_no_nse = EquitySignalBuilder().build("SBIN", fc, sim)
         sig_neutral_nse = EquitySignalBuilder().build("SBIN", fc, sim, nse_result=self._nse(0.0))
+        assert sig_no_nse["confidence"] == pytest.approx(0.60, abs=1e-4)
         assert sig_no_nse["confidence"] != sig_neutral_nse["confidence"]
 
 

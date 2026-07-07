@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -277,6 +278,45 @@ class TestSessionPriming:
         # Should still get live data via the API even though prime failed
         assert result["provider_mode"] == "nse_live"
         assert len(result["items"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# IST (not UTC) date window
+# ---------------------------------------------------------------------------
+
+class TestTimezoneWindow:
+    def test_fetch_uses_ist_not_utc_date_window(self):
+        """Regression test: between 00:00-05:30 IST, the UTC calendar day still lags
+        IST by one, so a `datetime.now(timezone.utc)`-based window would exclude
+        today's (IST) filings. 23:00 UTC on 2026-07-06 is 04:30 IST on 2026-07-07 —
+        the fetch window's to_date must be the IST date (07-07-2026), not the UTC one."""
+        import services.nse_announcements.nse_announcements_collector as mod
+
+        fixed_utc = datetime(2026, 7, 6, 23, 0, tzinfo=timezone.utc)
+
+        class _FixedDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed_utc.astimezone(tz) if tz else fixed_utc
+
+        captured = {}
+
+        def fake_get(url, **kwargs):
+            captured["url"] = url
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = []
+            return resp
+
+        sess = MagicMock(spec=requests.Session)
+        sess.get.side_effect = fake_get
+        sess.headers = {}
+        collector = mod.NseAnnouncementsCollector(session=sess)
+
+        with patch.object(mod, "datetime", _FixedDatetime):
+            collector.collect("SBIN")
+
+        assert "to_date=07-07-2026" in captured["url"]
 
 
 # ---------------------------------------------------------------------------

@@ -8,9 +8,30 @@ from services.nubra_client.signal_to_equity_order import SignalToEquityOrder
 
 
 def test_band_pct_from_circuit():
+    # No `base` (prev close) supplied -> falls back to the last-relative calc.
     # 10% band: upper = last * 1.10
     assert round(band_pct_from_circuit({"last": 100.0, "upper": 110.0}), 2) == 10.0
     assert band_pct_from_circuit({"last": 0, "upper": 110.0}) is None
+
+
+def test_band_pct_from_circuit_uses_base_not_intraday_last():
+    # The circuit band is defined off the PREVIOUS CLOSE (base), not the intraday last.
+    # A real 20% band: base 100 -> upper 120. The stock is already up 15% intraday to
+    # last=115. The last-relative calc would understate the band as (120/115-1)*100 ≈ 4.35%
+    # — the wrong tier for a real 20% band. Base-relative must report the true 20%.
+    status = {"last": 115.0, "upper": 120.0, "base": 100.0}
+    band = band_pct_from_circuit(status)
+    assert round(band, 2) == 20.0
+    # Sanity: confirm the last-relative calc really would have been wrong here.
+    wrong_last_relative = (status["upper"] / status["last"] - 1.0) * 100.0
+    assert round(wrong_last_relative, 2) != 20.0
+
+
+def test_band_pct_from_circuit_falls_back_when_base_missing_or_zero():
+    # base absent -> last-relative fallback (unchanged behaviour).
+    assert round(band_pct_from_circuit({"last": 100.0, "upper": 110.0, "base": None}), 2) == 10.0
+    # base present but zero (falsy) -> also falls back, never a divide-by-zero.
+    assert round(band_pct_from_circuit({"last": 100.0, "upper": 110.0, "base": 0}), 2) == 10.0
 
 
 def test_band_size_factor_tiers():

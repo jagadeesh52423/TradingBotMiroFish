@@ -9,6 +9,7 @@ error, letting the gate decide (fail-open by default).
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import requests
@@ -32,6 +33,7 @@ class NseCircuitProvider:
     def __init__(self, session: requests.Session | None = None, cache_ttl_seconds: int = _CACHE_TTL_SECONDS) -> None:
         self._session = session
         self._primed = False
+        self._prime_lock = threading.Lock()
         self._cache_ttl = cache_ttl_seconds
         self._cache: dict[str, tuple[dict | None, float]] = {}
 
@@ -55,18 +57,24 @@ class NseCircuitProvider:
         return result
 
     def _prime(self) -> None:
-        if self._session is None:
-            self._session = requests.Session()
-        self._session.headers.update({
-            "User-Agent": _BROWSER_UA,
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        })
-        try:
-            self._session.get(_NSE_HOME, timeout=15)
-        except Exception as exc:
-            _log.warning("NSE homepage prime failed (continuing): %s", exc)
-        self._primed = True
+        # Double-checked lock: the cheap unlocked check in _fetch lets primed callers skip
+        # the lock entirely; this guard prevents two concurrent threads (ThreadPoolExecutor
+        # runner) from both building a session and re-priming it at once.
+        with self._prime_lock:
+            if self._primed:
+                return
+            if self._session is None:
+                self._session = requests.Session()
+            self._session.headers.update({
+                "User-Agent": _BROWSER_UA,
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            })
+            try:
+                self._session.get(_NSE_HOME, timeout=15)
+            except Exception as exc:
+                _log.warning("NSE homepage prime failed (continuing): %s", exc)
+            self._primed = True
 
     @retry(
         retry=retry_if_exception_type(requests.RequestException),
@@ -99,22 +107,42 @@ class FyersCircuitProvider:
     Preferred over NseCircuitProvider: no NSE anti-bot 403s, and Fyers auth is
     already wired for market data. Needs a Fyers access token (config/env); with
     none, status() returns None and the gate fails open.
+
+    Per-symbol TTL cache (mirrors NseCircuitProvider): the runner fetches circuit
+    status for the same symbol twice per CALL (sizing + gate), plus again on exits,
+    all across a ThreadPoolExecutor — cache under a lock so concurrent symbols don't
+    corrupt each other's entry and repeat fetches don't hit the API needlessly.
     """
 
-    def __init__(self, fyers) -> None:
+    def __init__(self, fyers, cache_ttl_seconds: int = _CACHE_TTL_SECONDS) -> None:
         self._fyers = fyers
+        self._cache_ttl = cache_ttl_seconds
+        self._cache: dict[str, tuple[dict | None, float]] = {}
+        self._lock = threading.Lock()
 
     @classmethod
     def from_config(cls, config: dict) -> "FyersCircuitProvider":
         from services.fyers_client.fyers_data_provider import FyersDataProvider
-        return cls(FyersDataProvider.from_config(config))
+        cg = config.get("entry_threshold", {}).get("circuit_gate", {})
+        return cls(
+            FyersDataProvider.from_config(config),
+            cache_ttl_seconds=int(cg.get("cache_ttl_seconds", _CACHE_TTL_SECONDS)),
+        )
 
     def status(self, symbol: str) -> dict | None:
+        symbol = symbol.upper()
+        with self._lock:
+            entry = self._cache.get(symbol)
+            if entry and time.monotonic() < entry[1]:
+                return entry[0]
         try:
-            return self._fyers.circuit(symbol)
+            result = self._fyers.circuit(symbol)
         except Exception as exc:  # missing token / SDK / throttle — fail safe
             _log.warning("Fyers circuit fetch failed for %s: %s", symbol, exc)
-            return None
+            result = None
+        with self._lock:
+            self._cache[symbol] = (result, time.monotonic() + self._cache_ttl)
+        return result
 
 
 def _to_float(v) -> float | None:
@@ -135,4 +163,7 @@ def _parse_quote(data: dict) -> dict | None:
     lower = _to_float(price.get("lowerCP"))
     if last is None or upper is None:
         return None  # can't judge circuit proximity without both
-    return {"last": last, "upper": upper, "lower": lower, "band": price.get("pPriceBand")}
+    # previousClose is the base the circuit band is actually computed off (not `last`,
+    # which drifts intraday). None when the NSE payload doesn't carry it.
+    base = _to_float(price.get("previousClose"))
+    return {"last": last, "upper": upper, "lower": lower, "band": price.get("pPriceBand"), "base": base}

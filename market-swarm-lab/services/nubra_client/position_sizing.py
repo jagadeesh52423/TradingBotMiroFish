@@ -13,10 +13,20 @@ _DEFAULT_TIERS: list[tuple[float, float]] = [(2.5, 0.5), (5.5, 0.7), (10_000.0, 
 
 
 def band_pct_from_circuit(status: dict) -> float | None:
-    """One-sided band width % from a circuit status dict ({'last','upper',...})."""
+    """One-sided band width % from a circuit status dict ({'last','upper','base',...}).
+
+    The circuit band is defined off the PREVIOUS CLOSE (base), not the intraday last
+    price. Using `last` understates a real band on a stock already up intraday, which
+    both under-tiers position size and under-flags the watchlist band-factor precisely
+    on the strongest movers. Falls back to the last-relative calc when `base` is
+    missing/zero so callers without prev-close data still get a (weaker) estimate.
+    """
     last, upper = status.get("last"), status.get("upper")
     if not last or not upper:
         return None
+    base = status.get("base")
+    if base:
+        return (upper / base - 1.0) * 100.0
     return (upper / last - 1.0) * 100.0
 
 

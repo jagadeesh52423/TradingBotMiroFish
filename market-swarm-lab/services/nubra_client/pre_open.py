@@ -12,6 +12,7 @@ safe to None (→ no opinion) on any error.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 
 import requests
@@ -44,7 +45,9 @@ class PreOpenCollector:
     def __init__(self, session: requests.Session | None = None, cache_ttl_seconds: int = _CACHE_TTL) -> None:
         self._session = session
         self._primed = False
-        self._cache_ttl = cache_ttl_seconds
+        self._lock = threading.Lock()          # guards session build+prime
+        self._snap_lock = threading.Lock()     # guards the shared-snapshot fetch (separate lock
+        self._cache_ttl = cache_ttl_seconds    # to avoid re-entrancy with _lock via _fetch)
         self._snap: dict | None = None
         self._expiry = 0.0
 
@@ -60,13 +63,22 @@ class PreOpenCollector:
     def _snapshot(self) -> dict:
         if self._snap is not None and time.monotonic() < self._expiry:
             return self._snap
-        try:
-            self._snap = _parse(self._fetch())
-        except Exception as exc:
-            _log.warning("NSE pre-open fetch failed: %s", exc)
-            self._snap = {}
-        self._expiry = time.monotonic() + self._cache_ttl
-        return self._snap
+        # One NSE call serves all symbols: hold the lock across the fetch so that on a cold
+        # cache exactly one runner thread fetches+parses the market-wide payload while the
+        # others wait and then read the warm cache — instead of every thread piling onto the
+        # anti-bot pre-open endpoint. (Separate lock from _lock to avoid re-entering it via
+        # _fetch's prime guard.)
+        with self._snap_lock:
+            if self._snap is not None and time.monotonic() < self._expiry:
+                return self._snap  # another thread warmed the cache while we waited
+            try:
+                snap = _parse(self._fetch())
+            except Exception as exc:
+                _log.warning("NSE pre-open fetch failed: %s", exc)
+                snap = {}
+            self._snap = snap
+            self._expiry = time.monotonic() + self._cache_ttl
+            return snap
 
     def _prime(self) -> None:
         if self._session is None:
@@ -82,7 +94,9 @@ class PreOpenCollector:
            stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True)
     def _fetch(self) -> dict:
         if not self._primed:
-            self._prime()
+            with self._lock:
+                if not self._primed:  # re-check inside the lock — build+prime exactly once
+                    self._prime()
         resp = self._session.get(_URL, headers={"Accept": "application/json"}, timeout=15)
         resp.raise_for_status()
         return resp.json()

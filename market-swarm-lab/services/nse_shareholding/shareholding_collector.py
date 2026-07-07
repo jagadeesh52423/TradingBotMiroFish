@@ -11,7 +11,9 @@ Soft flags only — never gate. Fail-safe to None/neutral.
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from datetime import datetime
 
 import requests
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
@@ -30,6 +32,7 @@ class ShareholdingCollector:
     def __init__(self, session: requests.Session | None = None, cache_ttl_seconds: int = _CACHE_TTL) -> None:
         self._session = session
         self._primed = False
+        self._lock = threading.Lock()
         self._cache_ttl = cache_ttl_seconds
         self._promoter_cache: dict[str, tuple[dict, float]] = {}
         self._fiidii: tuple[dict, float] | None = None
@@ -81,7 +84,9 @@ class ShareholdingCollector:
            stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=8), reraise=True)
     def _fetch(self, url: str, referer: str = _REFERER):
         if not self._primed:
-            self._prime()
+            with self._lock:
+                if not self._primed:  # re-check inside the lock — build+prime exactly once
+                    self._prime()
         resp = self._session.get(url, headers={"Referer": referer, "Accept": "application/json"}, timeout=15)
         resp.raise_for_status()
         return resp.json()
@@ -94,9 +99,26 @@ def _to_float(v):
         return None
 
 
+def _parse_quarter_date(value) -> datetime | None:
+    """Parse an NSE quarter-end date like '31-MAR-2026'. Returns None if unparseable."""
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value).strip(), "%d-%b-%Y")
+    except (ValueError, TypeError):
+        return None
+
+
 def _promoter_trend(rows: list) -> dict:
-    """rows are quarterly filings newest-first with `pr_and_prgrp` (promoter %)."""
-    pcts = [p for r in rows if (p := _to_float((r or {}).get("pr_and_prgrp"))) is not None]
+    """rows are quarterly filings, in whatever order NSE returns them. We can't trust
+    payload order to mean "newest-first" (NSE sometimes returns ascending or reordered
+    data), so sort by the row's own quarter-end `date` descending before reading latest
+    vs prior — otherwise the sign of the trend can invert. Rows with an unparseable date
+    sort last (via a stable sort, so their relative order among themselves is preserved)
+    rather than breaking the sort."""
+    ordered = sorted(rows or [], key=lambda r: _parse_quarter_date((r or {}).get("date")) or datetime.min,
+                      reverse=True)
+    pcts = [p for r in ordered if (p := _to_float((r or {}).get("pr_and_prgrp"))) is not None]
     if not pcts:
         return {"promoter_pct": None, "change_pct": None, "trend": None}
     latest = pcts[0]

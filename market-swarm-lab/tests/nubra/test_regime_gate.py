@@ -1,6 +1,9 @@
 """§10 market-regime gate + provider."""
 from __future__ import annotations
 
+import threading
+import time
+
 from services.nubra_client.market_regime import MarketRegimeProvider
 from services.nubra_client.entry_gate import RegimeGate
 
@@ -29,6 +32,35 @@ def test_regime_cached():
     p = MarketRegimeProvider(closes_fn)
     p.regime(); p.regime(); p.regime()
     assert len(calls) == 1  # resolved once, cached
+
+
+def test_regime_cache_atomic_under_concurrent_calls():
+    """Two threads racing on first resolve must not have one observe `_resolved=True`
+    before `_cached` is actually computed — that returned a stale None (regime gate
+    failing open in a down-market) instead of the real, computed regime."""
+    def closes_fn(idx):
+        time.sleep(0.02)  # widen the race window so concurrent threads actually overlap
+        return [200 - i for i in range(25)]  # falling -> "down"
+
+    p = MarketRegimeProvider(closes_fn)
+    results: list[str | None] = []
+
+    def call():
+        results.append(p.regime())
+
+    threads = [threading.Thread(target=call) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert all(r == "down" for r in results)
+
+
+def test_regime_none_when_bars_short_of_full_ma_even_above_min_bars():
+    # min_bars (15) < ma (20): 18 bars clears the old min_bars floor but is still short
+    # of the 20-day SMA window — must return None, not run a "20-day" SMA on 18 bars.
+    assert _prov([100 + i for i in range(18)], ma=20, min_bars=15).regime() is None
 
 
 def _call():

@@ -490,6 +490,114 @@ class TestThinHistorySkip:
 
 
 # ---------------------------------------------------------------------------
+# Soft-flag dedup + fail-soft (advisory flags must never turn a symbol into
+# status=error, and deals.flag() must be computed once, not twice)
+# ---------------------------------------------------------------------------
+
+class _CountingDeals:
+    """Tracks how many times .flag() is invoked — used to catch the dedup regression."""
+    def __init__(self, has_deal=True):
+        self.calls = 0
+        self._has_deal = has_deal
+
+    def flag(self, symbol):
+        self.calls += 1
+        return {"has_deal": self._has_deal}
+
+
+class _RaisingDeals:
+    def flag(self, symbol):
+        raise RuntimeError("deals source down")
+
+
+class _RaisingShareholding:
+    def promoter_flag(self, symbol):
+        raise RuntimeError("shareholding source down")
+
+
+class _RaisingDelivery:
+    def deliv_pct(self, symbol, on):
+        raise RuntimeError("delivery source down")
+
+    def trailing_avg(self, symbol, on, n):
+        raise RuntimeError("delivery source down")
+
+
+class _RaisingOptionProvider:
+    def summary(self, symbol):
+        raise RuntimeError("fno source down")
+
+
+class _RaisingPreopen:
+    def status(self, symbol):
+        raise RuntimeError("pre-open source down")
+
+
+class TestSoftFlagDedupAndFailSoft:
+    def test_deals_flag_computed_once_not_twice(self):
+        """deals.flag(symbol) must be called once and reused for both the 'deals' key
+        and catalyst_stack — previously it was called twice per symbol."""
+        runner, _ = _make_runner()
+        counting = _CountingDeals()
+        runner._deals = counting
+        runner._process_symbol("SBIN", dry_run=True)
+        assert counting.calls == 1
+
+    def test_deals_flag_failure_does_not_error_symbol(self):
+        runner, _ = _make_runner()
+        runner._deals = _RaisingDeals()
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["status"] != "error"
+        assert result["deals"] == {"has_deal": None}
+        # bulk_block_deal must not be (falsely) counted as firing when the source errored
+        assert "bulk_block_deal" not in result["catalyst_stack"]["catalyst_sources"]
+
+    def test_shareholding_flag_failure_does_not_error_symbol(self):
+        runner, _ = _make_runner()
+        runner._shareholding = _RaisingShareholding()
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["status"] != "error"
+        assert result["promoter"] == {"trend": None}
+
+    def test_delivery_flag_failure_does_not_error_symbol(self):
+        runner, _ = _make_runner()
+        runner._delivery = _RaisingDelivery()
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["status"] != "error"
+        assert result["delivery_conviction"] is None
+        assert result["delivery_pct"] is None
+        assert result["delivery_trailing_avg"] is None
+
+    def test_fno_flag_failure_does_not_error_symbol(self):
+        runner, _ = _make_runner()
+        runner._option_provider = _RaisingOptionProvider()
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["status"] != "error"
+        assert result["fno"] == {
+            "pcr": None, "pcr_label": None, "call_oi": None, "put_oi": None, "fno_available": None,
+        }
+
+    def test_pre_open_flag_failure_does_not_error_symbol(self):
+        runner, _ = _make_runner()
+        runner._preopen = _RaisingPreopen()
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["status"] != "error"
+        assert result["pre_open"] == {
+            "pre_open_gap_pct": None, "pre_open_qty": None, "pre_open_iep": None,
+            "pre_open_conviction": None,
+        }
+
+    def test_healthy_deals_flag_still_feeds_catalyst_stack(self):
+        """Sanity check: the dedup/fail-soft refactor must not break the happy path —
+        a real deal must still surface in both 'deals' and catalyst_stack."""
+        runner, _ = _make_runner()
+        runner._deals = _CountingDeals(has_deal=True)
+        result = runner._process_symbol("SBIN", dry_run=True)
+        assert result["deals"] == {"has_deal": True}
+        assert "bulk_block_deal" in result["catalyst_stack"]["catalyst_sources"]
+
+
+# ---------------------------------------------------------------------------
 # Wiring regression: market_data must be NubraClient, not NubraBroker
 # ---------------------------------------------------------------------------
 

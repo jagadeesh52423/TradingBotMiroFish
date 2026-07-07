@@ -8,6 +8,7 @@ N-day SMA), cached for the run. Fails open (returns None → 'unknown') when dat
 from __future__ import annotations
 
 import logging
+import threading
 
 _log = logging.getLogger(__name__)
 
@@ -27,6 +28,7 @@ class MarketRegimeProvider:
         self._min_bars = min_bars
         self._cached: str | None = None
         self._resolved = False
+        self._lock = threading.Lock()
 
     @classmethod
     def from_config(cls, config: dict) -> "MarketRegimeProvider":
@@ -44,14 +46,24 @@ class MarketRegimeProvider:
     def regime(self) -> str | None:
         if self._resolved:
             return self._cached
-        self._resolved = True
-        try:
-            closes = [float(c) for c in (self._closes_fn(self._index) or [])]
-        except Exception as exc:
-            _log.warning("regime index fetch failed (%s): %s", self._index, exc)
+        # Resolve-and-cache atomically: two concurrent threads racing here must not have
+        # one observe `_resolved=True` before `_cached` is actually set (which returned
+        # a stale/uninitialized None and made the regime gate fail open in a down-market).
+        with self._lock:
+            if self._resolved:  # re-check inside the lock — resolve exactly once
+                return self._cached
+            try:
+                closes = [float(c) for c in (self._closes_fn(self._index) or [])]
+            except Exception as exc:
+                _log.warning("regime index fetch failed (%s): %s", self._index, exc)
+                self._resolved = True
+                return self._cached
+            # Need enough bars for the full `ma`-day SMA (not just the looser min_bars
+            # floor) — otherwise a "20-day" SMA could silently run on fewer bars.
+            if len(closes) < max(self._ma, self._min_bars):
+                self._resolved = True
+                return self._cached
+            sma = sum(closes[-self._ma:]) / self._ma
+            self._cached = "up" if closes[-1] >= sma else "down"
+            self._resolved = True
             return self._cached
-        if len(closes) < self._min_bars:
-            return self._cached
-        sma = sum(closes[-self._ma:]) / len(closes[-self._ma:])
-        self._cached = "up" if closes[-1] >= sma else "down"
-        return self._cached

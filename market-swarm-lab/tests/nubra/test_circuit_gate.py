@@ -66,7 +66,17 @@ def test_parse_quote_handles_comma_strings():
     data = {"priceInfo": {"lastPrice": "1,234.50", "upperCP": "1,240.00", "lowerCP": "1,000.00",
                           "pPriceBand": "No Band"}}
     out = _parse_quote(data)
-    assert out == {"last": 1234.5, "upper": 1240.0, "lower": 1000.0, "band": "No Band"}
+    # No previousClose in the payload -> base is None (fail-open shape).
+    assert out == {"last": 1234.5, "upper": 1240.0, "lower": 1000.0, "band": "No Band", "base": None}
+
+
+def test_parse_quote_captures_base_from_previous_close():
+    # base (prev close) is the price the circuit band % is actually computed off — distinct
+    # from lastPrice, which can already be up intraday.
+    data = {"priceInfo": {"lastPrice": "1,234.50", "upperCP": "1,240.00", "lowerCP": "1,000.00",
+                          "previousClose": "1,127.30", "pPriceBand": "10"}}
+    out = _parse_quote(data)
+    assert out["base"] == 1127.3
 
 
 def test_parse_quote_none_when_no_band():
@@ -93,7 +103,15 @@ def _fyers_provider(row):
 
 def test_fyers_circuit_extracts_bands():
     prov = _fyers_provider({"ltp": 199.5, "upper_ckt": 200.0, "lower_ckt": 160.0})
-    assert prov.circuit("RELIANCE") == {"last": 199.5, "upper": 200.0, "lower": 160.0, "band": None}
+    # No `c` (prev close) in the row -> base is None.
+    assert prov.circuit("RELIANCE") == {
+        "last": 199.5, "upper": 200.0, "lower": 160.0, "band": None, "base": None}
+
+
+def test_fyers_circuit_extracts_base_from_prev_close():
+    # `c` is the depth-row previous close — the actual base the band % is computed off.
+    prov = _fyers_provider({"ltp": 199.5, "upper_ckt": 200.0, "lower_ckt": 160.0, "c": 180.0})
+    assert prov.circuit("RELIANCE")["base"] == 180.0
 
 
 def test_fyers_circuit_none_without_upper():
@@ -115,3 +133,122 @@ def test_fyers_circuit_provider_fails_safe_on_error():
         def circuit(self, s):
             raise RuntimeError("no token")
     assert FyersCircuitProvider(_Boom()).status("RELIANCE") is None
+
+
+# --- FyersCircuitProvider TTL cache (the runner fetches circuit status twice per CALL:
+# once in sizing, once in the gate — an uncached FyersCircuitProvider doubles Fyers calls). ---
+
+class _CountingFyers:
+    def __init__(self, row=None):
+        self._row = row or {"last": 100.0, "upper": 110.0, "lower": 90.0, "band": None, "base": None}
+        self.calls = 0
+
+    def circuit(self, symbol):
+        self.calls += 1
+        return dict(self._row)
+
+
+def test_fyers_circuit_provider_caches_within_ttl():
+    from services.nubra_client.circuit_status import FyersCircuitProvider
+
+    fyers = _CountingFyers()
+    provider = FyersCircuitProvider(fyers, cache_ttl_seconds=60)
+    provider.status("RELIANCE")
+    provider.status("RELIANCE")
+    provider.status("reliance")  # cache key is upper-cased, same entry
+    assert fyers.calls == 1, "repeated status() within TTL must not re-hit Fyers"
+
+
+def test_fyers_circuit_provider_cache_expires_after_ttl(monkeypatch):
+    from services.nubra_client import circuit_status as cs_module
+
+    fyers = _CountingFyers()
+    provider = cs_module.FyersCircuitProvider(fyers, cache_ttl_seconds=10)
+    fake_clock = [0.0]
+    monkeypatch.setattr(cs_module.time, "monotonic", lambda: fake_clock[0])
+
+    provider.status("RELIANCE")
+    fake_clock[0] = 5.0
+    provider.status("RELIANCE")  # still within the 10s TTL
+    assert fyers.calls == 1
+
+    fake_clock[0] = 11.0
+    provider.status("RELIANCE")  # TTL elapsed -> refetch
+    assert fyers.calls == 2
+
+
+def test_fyers_circuit_provider_from_config_reads_cache_ttl():
+    from services.nubra_client.circuit_status import FyersCircuitProvider
+
+    provider = FyersCircuitProvider.from_config(
+        {"entry_threshold": {"circuit_gate": {"cache_ttl_seconds": 5}}})
+    assert provider._cache_ttl == 5
+
+
+def test_fyers_circuit_provider_cache_is_thread_safe():
+    # The runner hits circuit status concurrently across symbols (ThreadPoolExecutor,
+    # max_workers=3) — the per-symbol cache dict must survive concurrent read/write
+    # without corruption or exceptions.
+    import threading
+
+    from services.nubra_client.circuit_status import FyersCircuitProvider
+
+    fyers = _CountingFyers()
+    provider = FyersCircuitProvider(fyers, cache_ttl_seconds=60)
+    symbols = [f"SYM{i}" for i in range(20)]
+    errors = []
+
+    def worker():
+        for _ in range(50):
+            for sym in symbols:
+                try:
+                    provider.status(sym)
+                except Exception as exc:  # pragma: no cover - would fail the test below
+                    errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert set(provider._cache.keys()) == set(symbols)
+
+
+# --- NseCircuitProvider._prime race guard -----------------------------------
+
+def test_nse_provider_prime_is_race_free():
+    # _prime lazily builds + primes the session; under concurrent callers (runner threads)
+    # the homepage GET used to be a check-then-set race. With the lock, it must run once.
+    import threading
+    import time as time_module
+
+    from services.nubra_client.circuit_status import NseCircuitProvider
+
+    class _FakeSession:
+        def __init__(self):
+            self.headers = {}
+            self.calls = 0
+            self._lock = threading.Lock()
+
+        def get(self, url, timeout=None, **kwargs):
+            with self._lock:
+                self.calls += 1
+            time_module.sleep(0.01)  # widen the race window
+            return self
+
+        def raise_for_status(self):
+            pass
+
+    session = _FakeSession()
+    provider = NseCircuitProvider(session=session)
+
+    threads = [threading.Thread(target=provider._prime) for _ in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert session.calls == 1, "homepage prime GET must run exactly once under concurrent callers"
+    assert provider._primed is True

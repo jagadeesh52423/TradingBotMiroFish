@@ -36,12 +36,13 @@ class EquitySignalBuilder:
 
     def __init__(self, config: dict | None = None) -> None:
         cfg = config or {}
-        cw_no_nse = cfg.get("confidence_weights", {}).get("no_nse", _DEFAULTS["no_nse"])
+        # NOTE: sim_conf (MiroFish outlook_score) is intentionally NOT used as a confidence
+        # leg — MiroFish's simulation is itself fed the forecast direction/confidence and the
+        # same NSE documents, so folding it back into the blend double-counts both. Only the
+        # "tf" and "nse" weights are read here; any "sim" entry in confidence_weights is
+        # ignored (kept in config/_DEFAULTS for backward compatibility).
         cw_with_nse = cfg.get("confidence_weights", {}).get("with_nse", _DEFAULTS["with_nse"])
-        self._tf_w = float(cw_no_nse.get("tf", _DEFAULTS["no_nse"]["tf"]))
-        self._sim_w = float(cw_no_nse.get("sim", _DEFAULTS["no_nse"]["sim"]))
         self._tf_w_nse = float(cw_with_nse.get("tf", _DEFAULTS["with_nse"]["tf"]))
-        self._sim_w_nse = float(cw_with_nse.get("sim", _DEFAULTS["with_nse"]["sim"]))
         self._nse_w = float(cw_with_nse.get("nse", _DEFAULTS["with_nse"]["nse"]))
 
         news_ov = cfg.get("news_override", _DEFAULTS["news_override"])
@@ -80,7 +81,10 @@ class EquitySignalBuilder:
             "strategy_type": "trend",          # Caveat C: must be non-"no_trade" or RiskEngine rejects
             "expected_move_pct": float(forecast["predicted_return"]),
             "confidence": confidence,
-            "horizon": "1d",
+            # Forecast is TimesFM horizon=5 (see equity_runner._process_symbol) — this label
+            # must match the true forecast horizon so ExpectedUpsideGate's threshold is read
+            # as "min 5-day upside", not "min 1-day upside".
+            "horizon": "5d",
             "signal_id": str(uuid.uuid4()),
         }
 
@@ -92,18 +96,23 @@ class EquitySignalBuilder:
         simulation: dict,
         nse_result: dict | None,
     ) -> float:
+        """Blend TimesFM confidence with NSE sentiment confidence.
+
+        ``simulation`` is accepted for interface stability (build() passes it through) but is
+        NOT an independent confidence input: the MiroFish simulation already consumes the
+        forecast's direction/confidence and the same NSE documents, so a sim_conf leg here
+        would double-count both signals rather than add new information.
+        """
         tf_conf = float(forecast["confidence"])
-        outlook = float(simulation.get("outlook_score", 0))
-        sim_conf = max(0.0, min(1.0, (outlook + 100) / 200))
+        if nse_result is None:
+            return round(tf_conf, 4)
 
-        if nse_result is not None:
-            nse_score = float(nse_result.get("sentiment_score", 0.0))
-            nse_conf = max(0.0, min(1.0, (nse_score + 1) / 2))
-            return round(
-                tf_conf * self._tf_w_nse
-                + sim_conf * self._sim_w_nse
-                + nse_conf * self._nse_w,
-                4,
-            )
-
-        return round(tf_conf * self._tf_w + sim_conf * self._sim_w, 4)
+        nse_score = float(nse_result.get("sentiment_score", 0.0))
+        nse_conf = max(0.0, min(1.0, (nse_score + 1) / 2))
+        total_w = self._tf_w_nse + self._nse_w
+        if total_w <= 0:
+            return round(tf_conf, 4)
+        # Renormalize so partial config overrides (e.g. only "tf" set) still sum to 1.
+        w_tf = self._tf_w_nse / total_w
+        w_nse = self._nse_w / total_w
+        return round(tf_conf * w_tf + nse_conf * w_nse, 4)
