@@ -213,3 +213,42 @@ def test_interval_confidence_neutral_when_quantiles_missing():
     assert _interval_confidence(100.0, [], []) == 0.5
     assert _interval_confidence(100.0, [99.0], []) == 0.5
     assert _interval_confidence(0.0, [99.0], [101.0]) == 0.5
+
+
+def test_warm_up_retries_transient_failure(monkeypatch):
+    import services.forecasting.forecasting_service as fs
+    monkeypatch.setattr(fs, "ENABLE_TIMESFM", True)
+    monkeypatch.setattr(fs, "_timesfm_model", None)
+    monkeypatch.setattr(fs, "_timesfm_error", None)
+    calls = {"n": 0}
+    def flaky_load():
+        calls["n"] += 1
+        if calls["n"] < 3:           # first two attempts "fail" transiently
+            fs._timesfm_error = "transient hf hiccup"
+            return False
+        fs._timesfm_model = object()  # third succeeds
+        return True
+    monkeypatch.setattr(fs, "_load_timesfm", flaky_load)
+    assert fs.warm_up_timesfm(retries=3, backoff=0.001) is True
+    assert calls["n"] == 3           # retried, not latched on the first failure
+
+
+def test_warm_up_gives_up_after_retries(monkeypatch):
+    import services.forecasting.forecasting_service as fs
+    monkeypatch.setattr(fs, "ENABLE_TIMESFM", True)
+    monkeypatch.setattr(fs, "_timesfm_model", None)
+    monkeypatch.setattr(fs, "_timesfm_error", None)
+    def always_fail():
+        fs._timesfm_error = "no torch"
+        return False
+    monkeypatch.setattr(fs, "_load_timesfm", always_fail)
+    assert fs.warm_up_timesfm(retries=3, backoff=0.001) is False
+    assert fs._timesfm_error == "no torch"  # genuine failure stays set for the run
+
+
+def test_warm_up_noop_when_already_loaded(monkeypatch):
+    import services.forecasting.forecasting_service as fs
+    monkeypatch.setattr(fs, "ENABLE_TIMESFM", True)
+    monkeypatch.setattr(fs, "_timesfm_model", object())
+    monkeypatch.setattr(fs, "_load_timesfm", lambda: (_ for _ in ()).throw(AssertionError("should not load")))
+    assert fs.warm_up_timesfm() is True  # already loaded → no reload attempt

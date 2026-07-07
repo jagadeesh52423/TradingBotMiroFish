@@ -43,7 +43,8 @@ from services.nubra_client.position_sizing import band_pct_from_circuit, band_si
 from services.nubra_client.equity_assembly import build_equity_stack
 from services.nubra_client.equity_context_builder import build_equity_context
 from services.nubra_client.signal_strategies import get_strategy
-from services.forecasting.forecasting_service import TimesFMForecastingService, ForecastUnavailable
+from services.forecasting.forecasting_service import (
+    TimesFMForecastingService, ForecastUnavailable, warm_up_timesfm)
 
 _log = logging.getLogger(__name__)
 _CONFIG_PATH = _ROOT / "config" / "nubra_config.json"
@@ -175,6 +176,13 @@ class NubraEquityRunner:
         )
         results: list[dict] = []
         batches = _chunk(self._whitelist, self._max_workers)
+
+        # Warm up TimesFM ONCE, single-threaded, before the pool dispatches — a transient
+        # first-load failure is retried here instead of latching a cached error that would make
+        # every symbol return no_forecast (silently zeroing the whole run).
+        if self._strategy.uses_forecast:
+            if not warm_up_timesfm():
+                _log.warning("TimesFM warm-up failed — this run will produce no forecasts")
 
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
             for batch in batches:

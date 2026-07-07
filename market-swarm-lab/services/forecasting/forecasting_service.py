@@ -12,13 +12,17 @@ Quantile mapping from TimesFM 2.5 output:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import threading
+import time
 from datetime import date
 from pathlib import Path
 from statistics import mean, stdev
 from typing import Any
+
+_log = logging.getLogger(__name__)
 
 _timesfm_error: str | None = None
 _timesfm_model = None
@@ -84,6 +88,29 @@ def _load_timesfm():
         except Exception as exc:
             _timesfm_error = str(exc)
             return False
+
+
+def warm_up_timesfm(retries: int = 3, backoff: float = 2.0) -> bool:
+    """Load TimesFM once, single-threaded, RETRYING a transient failure.
+
+    Call this BEFORE dispatching the per-symbol thread pool. Without it, the first concurrent
+    load can hit a transient error (HF-hub hiccup / first-call race); _load_timesfm latches
+    _timesfm_error permanently, so EVERY symbol then returns no_forecast — one transient failure
+    silently zeroes the whole run. Here we retry with backoff, clearing the cached transient
+    error between attempts, so a genuine load is given a few chances before we give up."""
+    global _timesfm_error
+    if not ENABLE_TIMESFM:
+        return False
+    if _timesfm_model is not None:
+        return True
+    for attempt in range(retries):
+        _timesfm_error = None  # clear a prior transient failure so this attempt actually retries
+        if _load_timesfm():
+            return True
+        _log.warning("TimesFM warm-up attempt %d/%d failed: %s", attempt + 1, retries, _timesfm_error)
+        if attempt < retries - 1:
+            time.sleep(backoff * (attempt + 1))
+    return False  # genuinely unavailable after retries — _timesfm_error stays set for the run
 
 
 class TimesFMForecastingService:
