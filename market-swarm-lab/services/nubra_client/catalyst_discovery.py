@@ -89,10 +89,15 @@ class CatalystDiscovery:
 
         catalyst.pop("", None)
         # 3. Drop ASM/GSM-surveilled + sub-liquidity names (playbook §2 liquidity / §1,§11 trap).
+        #    The guard IS the universe filter — do not arbitrarily cap. `max_symbols<=0` means
+        #    unlimited (default); a positive cap, if set, keeps the most-liquid names (by turnover)
+        #    rather than an alphabetical slice, so it never biases toward early-alphabet names.
         symbols = sorted(catalyst)
         if self._guard is not None:
             symbols = self._guard.filter(symbols, today)
-        return {s: catalyst[s] for s in sorted(symbols)[: self._max]}
+        if self._max and self._max > 0 and len(symbols) > self._max:
+            symbols = self._guard.top_by_turnover(symbols, self._max) if self._guard else symbols[: self._max]
+        return {s: catalyst[s] for s in sorted(symbols)}
 
     # ----------------------------------------------------------------- private
 
@@ -197,7 +202,15 @@ class SurveillanceLiquidityGuard:
         if turnover:  # only apply when we actually have turnover data (else fail-open)
             keep = {s for s in keep if turnover.get(s, 0.0) >= self._min_lacs}
 
+        self._last_turnover = turnover  # reused by top_by_turnover for a non-alphabetical cap
         return sorted(keep)
+
+    def top_by_turnover(self, symbols: list[str], n: int) -> list[str]:
+        """Keep the n most-liquid symbols by daily turnover (from the last filter's bhavcopy).
+        A quality-ranked cap — never an alphabetical slice. Falls back to input order if turnover
+        data is unavailable."""
+        turnover = getattr(self, "_last_turnover", None) or {}
+        return sorted(symbols, key=lambda s: turnover.get(s, 0.0), reverse=True)[:n]
 
     # ----------------------------------------------------------------- private
 

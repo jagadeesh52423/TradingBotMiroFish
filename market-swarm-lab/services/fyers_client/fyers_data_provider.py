@@ -17,12 +17,44 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from math import ceil
 
 from services.nubra_client.market_data_provider import MarketDataProvider
 from services.nubra_client.market_data_registry import register_provider
+
+# Fyers returns rate-limit hits as a 200 body {"s":"error","code":429,...} — NOT an HTTP error —
+# so tenacity/requests never retry them. Detect and retry with backoff so a large screen
+# (hundreds of names) doesn't drop symbols to transient throttling.
+_RL_RETRIES = 4
+_RL_BACKOFF = 1.5  # seconds, exponential
+
+
+class _FyersRateLimited(Exception):
+    pass
+
+
+def _is_rate_limited(resp) -> bool:
+    if not isinstance(resp, dict) or resp.get("s") != "error":
+        return False
+    if resp.get("code") == 429:
+        return True
+    return "limit" in str(resp.get("message", "")).lower()
+
+
+def _call_with_backoff(fn, *args, **kwargs):
+    """Call a Fyers SDK method, retrying on a 429/rate-limit response with exponential backoff."""
+    last = None
+    for attempt in range(_RL_RETRIES):
+        resp = fn(*args, **kwargs)
+        if not _is_rate_limited(resp):
+            return resp
+        last = resp
+        if attempt < _RL_RETRIES - 1:
+            time.sleep(_RL_BACKOFF * (2 ** attempt))
+    return last  # exhausted retries — return the last (rate-limited) body for normal handling
 
 _log = logging.getLogger(__name__)
 
@@ -143,7 +175,7 @@ class FyersDataProvider(MarketDataProvider):
             "range_to": range_to.strftime("%Y-%m-%d"),
             "cont_flag": "1",
         }
-        response = self._get_client().history(request) or {}
+        response = _call_with_backoff(self._get_client().history, request) or {}
         status = response.get("s")
         if status == "no_data":
             return []  # legitimately empty range (e.g. all-holiday window) — not an error
@@ -199,7 +231,7 @@ class FyersDataProvider(MarketDataProvider):
 
     def current_price(self, symbol: str) -> Decimal:
         fyers_symbol = self._to_fyers_symbol(symbol)
-        response = self._get_client().quotes({"symbols": fyers_symbol})
+        response = _call_with_backoff(self._get_client().quotes, {"symbols": fyers_symbol})
         ltp = _extract_ltp(response)
         return Decimal(str(ltp))
 
@@ -209,7 +241,7 @@ class FyersDataProvider(MarketDataProvider):
         None for cash-only names (option chain returns no call OI). PCR = put_oi/call_oi —
         descriptive context only (§8: not a leading signal).
         """
-        resp = self._get_client().optionchain(
+        resp = _call_with_backoff(self._get_client().optionchain,
             {"symbol": self._to_fyers_symbol(symbol), "strikecount": 1, "timestamp": ""})
         return _extract_option_summary(resp)
 
@@ -221,7 +253,7 @@ class FyersDataProvider(MarketDataProvider):
         treats None per its block_on_unknown policy (fail-open by default).
         """
         fyers_symbol = self._to_fyers_symbol(symbol)
-        response = self._get_client().depth({"symbol": fyers_symbol, "ohlcv_flag": "1"})
+        response = _call_with_backoff(self._get_client().depth, {"symbol": fyers_symbol, "ohlcv_flag": "1"})
         return _extract_circuit(response, fyers_symbol)
 
 

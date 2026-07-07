@@ -5,7 +5,7 @@
   "discovery": {
     "lookahead_days": 10,
     "lookback_days": 3,
-    "max_symbols": 150,
+    "max_symbols": 0,
     "exclude_surveillance": true,
     "min_turnover_cr": 5.0,
     "bhavcopy_lookback": 6

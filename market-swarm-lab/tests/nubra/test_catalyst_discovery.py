@@ -57,3 +57,20 @@ def test_resolve_universe_catalyst_calls_discovery():
         ctor.return_value.discover_detailed.return_value = {"BAR": {"type": "Dividend"}, "FOO": {"type": "Results"}}
         assert resolve_universe(cfg, "catalyst") == ["BAR", "FOO"]  # sorted keys
         assert cfg["catalyst_map"]["FOO"]["type"] == "Results"  # map stashed for the doc
+
+
+def test_max_symbols_zero_means_uncapped():
+    events = [{"symbol": f"SYM{i}"} for i in range(300)]
+    d, _ = _disc(events, set(), max_symbols=0)  # 0 = unlimited
+    with patch.object(d, "_recent_announcements", return_value={}):
+        assert len(d.discover(today=date(2026, 7, 7))) == 300  # no cap applied
+
+
+def test_positive_cap_keeps_top_turnover_not_alphabetical():
+    from services.nubra_client.catalyst_discovery import SurveillanceLiquidityGuard
+    g = SurveillanceLiquidityGuard(exclude_surveillance=False)
+    g._last_turnover = {"ZEBRA": 9000.0, "ALPHA": 100.0, "MANGO": 5000.0}  # lacs
+    # cap to 2 → the two most-liquid (ZEBRA, MANGO), NOT the alphabetical first (ALPHA, MANGO)
+    top = g.top_by_turnover(["ALPHA", "MANGO", "ZEBRA"], 2)
+    assert set(top) == {"ZEBRA", "MANGO"}
+    assert "ALPHA" not in top

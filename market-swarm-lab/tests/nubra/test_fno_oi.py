@@ -63,3 +63,22 @@ def test_extract_option_summary_oi_change():
         {"option_type": "PE", "oich": 1000}, {"option_type": "PE", "oich": None}]}}
     out = _extract_option_summary(resp)
     assert out["call_oi_change"] == 8000 and out["put_oi_change"] == 1000
+
+
+def test_fyers_call_retries_on_rate_limit(monkeypatch):
+    import services.fyers_client.fyers_data_provider as m
+    monkeypatch.setattr(m, "_RL_BACKOFF", 0.001)
+    calls = {"n": 0}
+    def flaky(_):
+        calls["n"] += 1
+        return {"s": "error", "code": 429} if calls["n"] < 3 else {"s": "ok", "d": [1]}
+    out = m._call_with_backoff(flaky, "x")
+    assert out == {"s": "ok", "d": [1]} and calls["n"] == 3
+
+
+def test_fyers_call_gives_up_after_retries(monkeypatch):
+    import services.fyers_client.fyers_data_provider as m
+    monkeypatch.setattr(m, "_RL_BACKOFF", 0.001)
+    monkeypatch.setattr(m, "_RL_RETRIES", 3)
+    out = m._call_with_backoff(lambda _: {"s": "error", "code": 429}, "x")
+    assert out == {"s": "error", "code": 429}  # returns last body for normal handling
