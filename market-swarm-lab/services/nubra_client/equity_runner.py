@@ -354,9 +354,13 @@ class NubraEquityRunner:
         ltp = float(context["price"]["ltp"])
 
         if self._strategy.requires_price_history and len(closes) < self._min_bars:
+            # A rate-limited/failed history fetch (history_ok False) is NOT a data-poor stock —
+            # label it data_throttled (retry next run) so it isn't confused with a genuine
+            # short-history name (e.g. a recent listing).
+            reason = ("data_throttled" if not context["price"].get("history_ok", True)
+                      else "insufficient_history")
             _log.info(
-                "%s | insufficient_history (bars=%d < min=%d) — skipped",
-                symbol, len(closes), self._min_bars,
+                "%s | %s (bars=%d < min=%d) — skipped", symbol, reason, len(closes), self._min_bars,
             )
             return {
                 "symbol": symbol,
@@ -368,7 +372,7 @@ class NubraEquityRunner:
                 "ltp": ltp,
                 "provider_modes": {},
                 "status": "skipped",
-                "skip_reason": "insufficient_history",
+                "skip_reason": reason,
                 "bars": len(closes),
             }
 

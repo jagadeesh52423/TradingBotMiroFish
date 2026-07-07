@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -25,15 +26,28 @@ from math import ceil
 from services.nubra_client.market_data_provider import MarketDataProvider
 from services.nubra_client.market_data_registry import register_provider
 
-# Fyers returns rate-limit hits as a 200 body {"s":"error","code":429,...} — NOT an HTTP error —
-# so tenacity/requests never retry them. Detect and retry with backoff so a large screen
-# (hundreds of names) doesn't drop symbols to transient throttling.
-_RL_RETRIES = 4
+# --- Fyers rate-limit hardening ---------------------------------------------
+# Fyers throttles data APIs (~10 req/s). A large screen (hundreds of names × ~4 calls each,
+# concurrent under the runner's ThreadPoolExecutor) blows past that and gets 429s. Two layers:
+#   1. A global rate GATE that paces every Fyers call to a minimum interval (prevents 429s at
+#      the source), and
+#   2. backoff RETRY on the 429 body (a safety net for whatever still slips through).
+# Fyers returns a rate-limit hit as a 200 body {"s":"error","code":429,...} — NOT an HTTP error
+# — so requests/tenacity never retry it; we detect the body explicitly.
+_RL_RETRIES = 5
 _RL_BACKOFF = 1.5  # seconds, exponential
+_MIN_INTERVAL = float(os.environ.get("FYERS_MIN_INTERVAL", "0.13"))  # ~7.5 req/s across all threads
+_RATE_LOCK = threading.Lock()
+_LAST_CALL = [0.0]
 
 
-class _FyersRateLimited(Exception):
-    pass
+def _rate_gate() -> None:
+    """Block until at least _MIN_INTERVAL has elapsed since the last Fyers call (global pacing)."""
+    with _RATE_LOCK:
+        wait = _LAST_CALL[0] + _MIN_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _LAST_CALL[0] = time.monotonic()
 
 
 def _is_rate_limited(resp) -> bool:
@@ -45,9 +59,10 @@ def _is_rate_limited(resp) -> bool:
 
 
 def _call_with_backoff(fn, *args, **kwargs):
-    """Call a Fyers SDK method, retrying on a 429/rate-limit response with exponential backoff."""
+    """Call a Fyers SDK method through the rate gate, retrying on a 429 body with backoff."""
     last = None
     for attempt in range(_RL_RETRIES):
+        _rate_gate()
         resp = fn(*args, **kwargs)
         if not _is_rate_limited(resp):
             return resp
