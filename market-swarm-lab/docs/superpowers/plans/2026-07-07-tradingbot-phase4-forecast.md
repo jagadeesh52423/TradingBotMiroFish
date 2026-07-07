@@ -51,8 +51,10 @@ tests/forecast/
   - `class ForecastUnavailable(RuntimeError)` — "no real forecast can be produced; there is no formulaic fallback" (docstring ported from SRC).
   - `@runtime_checkable class Forecaster(Protocol)`:
     `def warm_up(self) -> bool: ...` and
-    `def forecast_batch(self, series: dict[str, list[float]], horizon: int = 5) -> dict[str, Forecast]: ...`
-    (batched by design — there is deliberately no single-symbol method).
+    `def forecast_batch(self, series: dict[str, list[float]], horizon: int | None = None) -> dict[str, Forecast]: ...`
+    (batched by design — there is deliberately no single-symbol method). The `horizon`
+    parameter is an intentional, backward-compatible extension of the spec §3 signature
+    (`None` → `settings.horizon`); callers may still invoke `forecast_batch(series)` bare.
 
 - [ ] **Step 1: Write the failing test** — `tests/forecast/test_base.py`:
 
@@ -70,7 +72,7 @@ def test_protocol_is_runtime_checkable_and_batch_first():
     class Fake:
         def warm_up(self) -> bool:
             return True
-        def forecast_batch(self, series, horizon: int = 5):
+        def forecast_batch(self, series, horizon: int | None = None):
             return {s: Forecast(predicted_return=0.0, direction=TradeDirection.NEUTRAL,
                                 confidence=0.5, quantiles=Quantiles([], [], []))
                     for s in series}
@@ -94,7 +96,7 @@ def test_protocol_is_runtime_checkable_and_batch_first():
 - Produces (pure functions, no IO):
   - `DIRECTION_EPS = 0.005` (SRC's ±0.5% sideways threshold)
   - `direction_for(last_close: float, final_point: float) -> TradeDirection` — computes `delta_pct` and returns `TradeDirection.from_return(delta_pct, eps=DIRECTION_EPS)`; guards `last_close` with `max(abs(last_close), 1e-9)` as SRC does.
-  - `magnitude_confidence(last_close: float, final_point: float) -> float` — SRC formula `min(0.95, 0.5 + abs(delta_pct) * 8)`.
+  - `magnitude_confidence(last_close: float, final_point: float) -> float` — SRC formula `round(min(0.95, 0.5 + abs(delta_pct) * 8), 3)` (SRC pre-rounds to 3 dp before the combine — keep it for exact parity).
   - `interval_confidence(last_close: float, q10_last: float | None, q90_last: float | None, k: float = 0.15) -> float` — exp decay `exp(-band/(k·|last_close|))` clamped [0,1]; returns **0.5** when either quantile is None or `last_close` is falsy / denom ≤ 0 (ported neutral-guard).
   - `combined_confidence(last_close, final_point, q10_last, q90_last) -> float` — `round(max(0.0, min(1.0, magnitude × interval)), 3)`.
 
@@ -159,7 +161,7 @@ def test_combined_is_multiplicative_not_inflating():
   - `def load_model(venv_path: str | None) -> bool` — injects `<venv>/lib/python*/site-packages` (default venv: `<repo>/.venv-timesfm`; a configured `venv_path` — e.g. the existing MiroFish `.venv-timesfm` — avoids a second 2GB install), imports torch/numpy/timesfm, builds + compiles the 2.5 model once under the lock; caches error string on failure.
   - `def warm_up(venv_path: str | None = None, retries: int = 3, backoff: float = 2.0) -> bool` — single-threaded retryable load; **clears the cached transient error between attempts** (the anti-"empty run" fix); a genuine failure stays latched after the retries.
 
-- [ ] **Step 1: Write failing tests** — PORT these SRC tests, adapting imports/monkeypatch targets to `tradingbot.forecast.timesfm`: `test_load_timesfm_is_thread_safe_single_load` (8 threads, fake `timesfm`+`torch` modules via `monkeypatch.setitem(sys.modules, ...)`, assert exactly one `from_pretrained`), `test_warm_up_retries_transient_failure` (flaky loader succeeds on 3rd; assert 3 calls), `test_warm_up_gives_up_after_retries` (error stays latched), `test_warm_up_noop_when_already_loaded`. Copy the SRC test bodies; only the module path and function names change per the Interfaces above.
+- [ ] **Step 1: Write failing tests** — PORT these SRC tests, adapting imports/monkeypatch targets to `tradingbot.forecast.timesfm`: `test_load_timesfm_is_thread_safe_single_load` (8 threads, fake `timesfm`+`torch` modules via `monkeypatch.setitem(sys.modules, ...)`, assert exactly one `from_pretrained`), `test_warm_up_retries_transient_failure` (flaky loader succeeds on 3rd; assert 3 calls), `test_warm_up_gives_up_after_retries` (error stays latched), `test_warm_up_noop_when_already_loaded`. Copy the SRC test bodies; the module path and function names change per the Interfaces above, plus ONE signature adaptation: the loader is now `load_model(venv_path)` (SRC's `_load_timesfm()` took no args), so the thread-safety test's thread target becomes `lambda: load_model(None)` and direct calls pass `None`.
 - [ ] **Step 2: Run — FAIL. Step 3: Implement** (PORT; the only transformations: `ENABLE_TIMESFM` env is replaced by `settings.forecast.enabled` checked by the caller — the loader itself is unconditional; venv path parameterized; `FORECAST_DUMP` diagnostic is **deliberately not ported** — superseded by the batch design, note in commit).
 - [ ] **Step 4: Run — 4 passed. Step 5: Commit** — `feat(forecast): TimesFM 2.5 loader + retryable single-threaded warm-up (port)`
 
@@ -188,7 +190,7 @@ class TimesFMForecaster:                       # satisfies Forecaster
   1. Raise `ForecastUnavailable(_timesfm_error)` if the model is not loaded (callers run `warm_up()` first; this is the defensive path).
   2. **Exclude** symbols whose series has `< 2` points — absent from the result (the pipeline maps absent → `DropReason.NO_FORECAST`). Empty input → `{}` without touching the model.
   3. ONE model call: `points, quantiles = _timesfm_model.forecast(horizon=horizon, inputs=[np.array(s, dtype=np.float32) for s in ordered_series])` — **the whole batch in a single call** (spec §2 stage 4).
-  4. Per symbol *i*: `pts = points[i][:horizon]`; quantile deciles at indices **1/5/9** (q10/q50/q90 — TimesFM 2.5's head: index 0 = mean, 1–9 = deciles; ported); `predicted_return = round((pts[-1] − last_close)/last_close, 6)`; `direction = direction_for(...)`; `confidence = combined_confidence(last_close, pts[-1], q10[-1], q90[-1])`; wrap in domain `Forecast` with `Quantiles(q10, q50, q90)` (floats rounded 4, as SRC).
+  4. Per symbol *i*: `pts = [round(float(v), 4) for v in points[i][:horizon]]` (SRC rounds points to 4 dp BEFORE deriving direction/return — keep for parity); quantile deciles at indices **1/5/9** (q10/q50/q90 — TimesFM 2.5's head: index 0 = mean, 1–9 = deciles; the SRC `nq < 10` fallback branch is deliberately dropped — the 2.5 head always returns 10 columns; note it in the commit); `predicted_return = round((pts[-1] − last_close)/last_close, 6)` **guarded: falsy `last_close` → `predicted_return = 0.0`** (SRC guard, no div-by-zero); `direction = direction_for(...)`; `confidence = combined_confidence(last_close, pts[-1], q10[-1], q90[-1])`; wrap in domain `Forecast` with `Quantiles(q10, q50, q90)` (quantile floats rounded 4, as SRC).
 
 - [ ] **Step 1: Write failing tests** with a **deterministic fake model** installed as `_timesfm_model` (no fake sys.modules needed — set the module global directly via monkeypatch):
 
