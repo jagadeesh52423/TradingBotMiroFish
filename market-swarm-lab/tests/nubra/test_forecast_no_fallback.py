@@ -195,11 +195,15 @@ def test_interval_confidence_helper_directly():
     from services.forecasting.forecasting_service import _interval_confidence
 
     tight = _interval_confidence(100.0, [99.5], [100.5])   # 1% band
-    wide = _interval_confidence(100.0, [95.0], [105.0])    # 10% band → k=0.10 drives to ~0
-    assert tight > wide
-    assert wide < 0.1, "a 10% band should nearly zero out interval confidence at k=0.10"
-    assert 0.0 <= wide <= 1.0
-    assert 0.0 <= tight <= 1.0
+    wide = _interval_confidence(100.0, [95.0], [105.0])    # 10% band
+    very_wide = _interval_confidence(100.0, [85.0], [115.0])  # 30% band
+    # Smooth exponential decay (k=0.15): tight band → near 1, wider bands decay gracefully
+    # WITHOUT cliffing to 0 (the old linear form zeroed a 10% band, crushing every name).
+    assert tight > wide > very_wide
+    assert tight > 0.9, "a 1% band should keep confidence high"
+    assert 0.4 < wide < 0.6, "a 10% band should be reduced but NOT crushed to ~0"
+    assert very_wide < 0.15, "a 30% band should be strongly penalized"
+    assert 0.0 <= very_wide <= 1.0 and 0.0 <= tight <= 1.0
 
 
 def test_interval_confidence_neutral_when_quantiles_missing():

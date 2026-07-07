@@ -85,7 +85,12 @@ class NubraEquityRunner:
 
         self._forecasting = forecasting or TimesFMForecastingService()
         self._mirofish = mirofish or MiroFishBridgeService()
-        self._risk = risk_engine or RiskEngineService()
+        # TimesFM confidence is a predictor of upside potential, NOT a filter — the equity
+        # screen disables the RiskEngine confidence gate (config default 0.0). Probables are
+        # gated by the playbook (circuit/sector/regime/direction) and ranked by watchlist score.
+        self._risk = risk_engine or RiskEngineService(
+            min_confidence=float(config.get("signal", {}).get("min_confidence_threshold", 0.0))
+        )
         # Default aggregates all enabled news sources (NSE + Google News + ...) into
         # one nse_result; falls back to NSE-only when no extra sources are configured.
         self._nse = nse_collector or AggregatingNewsCollector.from_config(config)
@@ -145,6 +150,11 @@ class NubraEquityRunner:
         else:
             self._shareholding = None
         self._min_bars: int = int(config.get("signal", {}).get("min_bars_for_signal", 10))
+        # Candidacy (watchlist) mode: a probable = any catalyst name that PASSES THE PLAYBOOK
+        # GATES (circuit/sector/regime, evaluated as buy-intent). TimesFM direction/upside/
+        # confidence ANNOTATE the potential — they never filter. Live-execution mode leaves
+        # this off (TimesFM direction drives real CALL/PUT/HOLD orders). Set by screen mode.
+        self._candidacy_mode: bool = bool(config.get("candidacy_mode", False))
         self._nubra_client = nubra_client
         self._stack = equity_stack
 
@@ -268,9 +278,12 @@ class NubraEquityRunner:
         return {"delivery_conviction": _delivery_conviction(deliv, avg),
                 "delivery_pct": deliv, "delivery_trailing_avg": avg}
 
-    def _apply_sizing(self, signal: dict) -> None:
-        """Attach size_factor + band_pct to a CALL signal from live circuit-band width (§5)."""
-        if not self._sizing_enabled or str(signal.get("trade", "")).upper() != "CALL":
+    def _apply_sizing(self, signal: dict, force: bool = False) -> None:
+        """Attach size_factor + band_pct from live circuit-band width (§5). Normally CALL-only;
+        `force` (candidacy/watchlist mode) annotates the band for every name regardless of trade."""
+        if not self._sizing_enabled:
+            return
+        if not force and str(signal.get("trade", "")).upper() != "CALL":
             return
         status = self._circuit_provider.status(str(signal.get("ticker", "")).upper())
         if not status:
@@ -389,7 +402,9 @@ class NubraEquityRunner:
                 "nse": nse_result.get("provider_mode"),
             }
 
-        if signal is None or signal["trade"] == "HOLD":
+        # Live-execution mode: a HOLD/no-signal is dropped (nothing to trade). Candidacy mode
+        # falls through — a TimesFM-neutral name is still a probable, judged by the playbook gates.
+        if (signal is None or signal["trade"] == "HOLD") and not self._candidacy_mode:
             forecast_summary = (
                 {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]}
                 if forecast is not None
@@ -408,18 +423,30 @@ class NubraEquityRunner:
                 "skip_reason": "HOLD",
             }
 
-        self._apply_sizing(signal)
+        self._apply_sizing(signal, force=self._candidacy_mode)
 
         risk_context = {
             **context,
             "source_audit": _build_risk_audit(context["source_audit"], nse_result, closes),
         }
-        risk_result = self._risk.evaluate(signal, risk_context)
-        gate_ok, gate_reason = self._entry_gate.evaluate(signal)
-        for gate in self._extra_gates:
-            if not gate_ok:
-                break
-            gate_ok, gate_reason = gate.evaluate(signal)
+        if self._candidacy_mode:
+            # A probable = passes the PLAYBOOK gates (circuit/sector/regime), evaluated as a buy
+            # candidate. TimesFM (direction/upside/confidence) and the risk/upside gates do NOT
+            # filter — they only annotate. Every name is judged the same buy-candidacy way.
+            risk_result = {"approved": True, "risk_notes": []}
+            gate_ok, gate_reason = True, None
+            candidacy_signal = {"trade": "CALL", "ticker": symbol}
+            for gate in self._extra_gates:
+                if not gate_ok:
+                    break
+                gate_ok, gate_reason = gate.evaluate(candidacy_signal)
+        else:
+            risk_result = self._risk.evaluate(signal, risk_context)
+            gate_ok, gate_reason = self._entry_gate.evaluate(signal)
+            for gate in self._extra_gates:
+                if not gate_ok:
+                    break
+                gate_ok, gate_reason = gate.evaluate(signal)
 
         forecast_summary = (
             {"direction": forecast["direction"], "predicted_return": forecast["predicted_return"]}
@@ -465,10 +492,11 @@ class NubraEquityRunner:
             "catalyst_stack": _catalyst_stack(nse_result, deals_flag),
             # §2 watchlist ranking score + factor breakdown.
             "watchlist": self._watchlist(symbol, nse_result, signal, delivery_flag.get("delivery_pct")),
-            # §5 scale-out targets (advisory) — CALL entries only.
+            # §5 scale-out targets (advisory). scale_out_targets returns None for a non-positive
+            # move, so in candidacy mode only bullish-potential names get T1/T2.
             "targets": (
                 scale_out_targets(float(ltp), float(signal.get("expected_move_pct", 0) or 0), self._targets_cfg)
-                if self._targets_enabled and str(signal.get("trade", "")).upper() == "CALL"
+                if self._targets_enabled and (self._candidacy_mode or str(signal.get("trade", "")).upper() == "CALL")
                 else None
             ),
         }
@@ -478,6 +506,11 @@ class NubraEquityRunner:
 
         if not gate_ok:
             return {**base, "status": "skipped", "skip_reason": gate_reason or "entry_gate"}
+
+        # Candidacy/watchlist mode: passing the playbook gates IS election — no order dispatch,
+        # no trade-count cap, no PUT-exit handling (those are live-execution concerns).
+        if self._candidacy_mode:
+            return {**base, "status": "executed", "dry_run": dry_run}
 
         dispatch_result = None
         with self._trade_lock:
@@ -583,11 +616,14 @@ def build_runner(config: dict, *, strategy: str | None = None, mode: str = "nubr
     """Construct a NubraEquityRunner from a config dict (whitelist must already be resolved).
 
     mode='screen' builds a broker-less stack (paper broker + Fyers data) so the scanner
-    runs read-only with just a Fyers token — no Nubra session.
+    runs read-only with just a Fyers token — no Nubra session. Screen mode also turns on
+    candidacy mode: a probable = passes the playbook gates, with TimesFM annotating potential
+    (no TimesFM filtering). Live 'nubra_uat' mode leaves candidacy off (real order execution).
     """
     stack = build_equity_stack(mode, config)
+    run_cfg = {**config, "candidacy_mode": config.get("candidacy_mode", mode == "screen")}
     return NubraEquityRunner(
-        config,
+        run_cfg,
         nubra_client=stack.market_data,
         equity_stack=stack,
         strategy=strategy,

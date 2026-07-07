@@ -3,6 +3,12 @@ from __future__ import annotations
 
 
 class RiskEngineService:
+    def __init__(self, min_confidence: float = 0.60) -> None:
+        # Confidence gate (Rule 1). Default 0.60 preserves the US pipeline's behavior.
+        # The India equity screen sets this to 0 — TimesFM is a predictor of upside
+        # POTENTIAL, not a filter, so its confidence must never veto a playbook probable.
+        self._min_confidence = float(min_confidence)
+
     def evaluate(self, signal: dict, context: dict) -> dict:
         source_audit: dict = context.get("source_audit") or {}
         reddit: dict = context.get("reddit") or {}
@@ -18,10 +24,10 @@ class RiskEngineService:
         approved: bool = True
         adjusted_confidence: float = confidence
 
-        # Rule 1: confidence threshold
-        if confidence < 0.60:
+        # Rule 1: confidence threshold (disabled when _min_confidence <= 0 — India equity path).
+        if self._min_confidence > 0 and confidence < self._min_confidence:
             approved = False
-            risk_notes.append("confidence below threshold (0.60)")
+            risk_notes.append(f"confidence below threshold ({self._min_confidence:.2f})")
 
         # Rule 2: OHLCV fallback
         ohlcv_audit: dict = source_audit.get("ohlcv") or {}

@@ -762,6 +762,48 @@ class TestBuildRiskAudit:
             "Rule 2 should reject when ohlcv.status=fallback (only LTP available)"
         )
 
+    def test_candidacy_mode_elects_bearish_and_neutral_names(self):
+        """Candidacy (watchlist) mode: a probable = passes the playbook gates; TimesFM direction
+        never filters. A bearish PUT and a neutral HOLD forecast are BOTH elected (annotated),
+        whereas live mode drops the HOLD and would sell the PUT."""
+        for fc in (_BEARISH_FORECAST, _NEUTRAL_FORECAST, _BULLISH_FORECAST):
+            runner, _ = _make_runner(forecast=fc, cfg_override={"candidacy_mode": True})
+            out = runner._process_symbol("SBIN", dry_run=True)
+            assert out["status"] == "executed", f"{fc['direction']} should be elected in candidacy mode"
+            # TimesFM potential is annotated (+/-), not a filter
+            assert out["forecast"]["predicted_return"] == fc["predicted_return"]
+
+    def test_candidacy_mode_still_blocked_by_playbook_gate(self):
+        """A playbook gate still filters in candidacy mode — election = passing the gates."""
+        class _BlockAll:
+            def evaluate(self, signal):
+                return False, "circuit locked"
+        runner, _ = _make_runner(forecast=_BULLISH_FORECAST, cfg_override={"candidacy_mode": True})
+        runner._extra_gates = [_BlockAll()]
+        out = runner._process_symbol("SBIN", dry_run=True)
+        assert out["status"] == "skipped" and out["skip_reason"] == "circuit locked"
+
+    def test_live_mode_still_drops_hold(self):
+        """Live mode (candidacy off) keeps the original behavior: a HOLD is dropped."""
+        runner, _ = _make_runner(forecast=_NEUTRAL_FORECAST)  # neutral → HOLD
+        out = runner._process_symbol("SBIN", dry_run=True)
+        assert out["status"] == "skipped" and out["skip_reason"] == "HOLD"
+
+    def test_confidence_gate_configurable_disabled_for_equity(self):
+        """TimesFM confidence must NOT filter probables: min_confidence=0 disables Rule 1,
+        so a low-confidence CALL that the default (0.60) gate rejects is now approved."""
+        from risk_engine_service import RiskEngineService
+
+        signal = {"trade": "CALL", "strategy_type": "trend", "confidence": 0.30,
+                  "asset_class": "equity", "ticker": "SBIN"}
+        context = {"source_audit": {"ohlcv": {"status": "live"}, "news": {"status": "live"}}}
+        # Default 0.60 gate rejects a 0.30-confidence signal...
+        assert RiskEngineService().evaluate(signal, context)["approved"] is False
+        # ...but the equity path (min_confidence=0) does not filter on TimesFM confidence.
+        approved = RiskEngineService(min_confidence=0.0).evaluate(signal, context)
+        assert approved["approved"] is True
+        assert not any("confidence below" in n for n in approved["risk_notes"])
+
     # ── Integration: Rule 3 fires on NSE fallback (confidence reduced) ──────
 
     def test_rule3_reduces_confidence_on_nse_fallback(self):

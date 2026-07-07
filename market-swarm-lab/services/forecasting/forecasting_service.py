@@ -273,19 +273,21 @@ def _derive_direction(
     return direction, confidence
 
 
-def _interval_confidence(last_close: float, q10: list[float], q90: list[float], k: float = 0.10) -> float:
+def _interval_confidence(last_close: float, q10: list[float], q90: list[float], k: float = 0.15) -> float:
     """Confidence contribution from TimesFM's quantile spread.
 
     A wide q10-q90 band (relative to last_close) means the model itself is uncertain about
     the forecast, even if the point forecast's magnitude looks confident — e.g. a +3% point
     forecast with q10=-10%/q90=+16% is far less trustworthy than one with q10=+2.5%/q90=+3.5%.
-    ``k`` sets how much band width (as a fraction of last_close) fully zeroes out confidence;
-    k=0.10 means a band equal to 10% of last_close drives interval confidence to 0. Real 5-day
-    bands run ~5-15% of price, so this range actually discriminates tight vs wide (a larger k
-    like 0.5 would leave the interval leg pinned near 1.0 and unable to penalize anything).
 
-    Returns a NEUTRAL 0.5 (not 1.0) when quantiles are missing or last_close is 0 — absent
-    band data is least-trustworthy, so it must not award maximum confidence.
+    Uses a SMOOTH exponential decay `exp(-band/(k*last_close))` rather than a linear
+    `1 - band/(k*last_close)`: the linear form cliffs to 0 at band == k*price (a 10% band
+    with k=0.10 zeroed confidence entirely, crushing every moderately-volatile name), whereas
+    the exponential degrades gracefully and never hits 0 — a 5% band -> ~0.72, 15% -> ~0.37
+    at k=0.15. This is a descriptive/ranking signal; it does NOT gate probables.
+
+    Returns a NEUTRAL 0.5 when quantiles are missing or last_close is 0 — absent band data
+    is least-trustworthy, so it must not award maximum confidence.
     """
     if not q10 or not q90 or not last_close:
         return 0.5
@@ -293,4 +295,5 @@ def _interval_confidence(last_close: float, q10: list[float], q90: list[float], 
     denom = k * abs(last_close)
     if denom <= 0:
         return 0.5
-    return max(0.0, min(1.0, 1 - band / denom))
+    import math
+    return max(0.0, min(1.0, math.exp(-band / denom)))
