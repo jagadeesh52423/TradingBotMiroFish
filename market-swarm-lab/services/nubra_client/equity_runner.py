@@ -533,9 +533,13 @@ def load_config(path: pathlib.Path = _CONFIG_PATH) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build_runner(config: dict, *, strategy: str | None = None) -> NubraEquityRunner:
-    """Construct a NubraEquityRunner from a config dict (whitelist must already be resolved)."""
-    stack = build_equity_stack("nubra_uat", config)
+def build_runner(config: dict, *, strategy: str | None = None, mode: str = "nubra_uat") -> NubraEquityRunner:
+    """Construct a NubraEquityRunner from a config dict (whitelist must already be resolved).
+
+    mode='screen' builds a broker-less stack (paper broker + Fyers data) so the scanner
+    runs read-only with just a Fyers token — no Nubra session.
+    """
+    stack = build_equity_stack(mode, config)
     return NubraEquityRunner(
         config,
         nubra_client=stack.market_data,

@@ -42,6 +42,9 @@ class AggregatingNewsCollector:
         if config.get("news", {}).get("pib", {}).get("enabled"):
             from services.pib.pib_collector import PibCollector
             sources.append(("pib", PibCollector.from_config(config)))
+        if config.get("news", {}).get("reddit", {}).get("enabled"):
+            from services.reddit_india.india_reddit_collector import IndiaRedditCollector
+            sources.append(("reddit", IndiaRedditCollector.from_config(config)))
         return cls(sources, get_analyzer(engine, config))
 
     def collect(self, symbol: str) -> dict[str, Any]:

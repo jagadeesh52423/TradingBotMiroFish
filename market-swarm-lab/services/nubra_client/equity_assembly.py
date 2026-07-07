@@ -74,12 +74,14 @@ def build_equity_stack(
 
     if mode == "paper":
         broker, feed, effective_ltp, funds_check, market_data = _paper_components(ltp_provider)
+    elif mode == "screen":
+        broker, feed, effective_ltp, funds_check, market_data = _screen_components(config, data_provider)
     elif mode == "nubra_uat":
         broker, feed, effective_ltp, funds_check, market_data = _nubra_uat_components(
             config, whitelist, client_factory=client_factory, data_provider=data_provider
         )
     else:
-        raise ValueError(f"Unknown equity mode: {mode!r}. Expected 'paper' or 'nubra_uat'.")
+        raise ValueError(f"Unknown equity mode: {mode!r}. Expected 'paper', 'screen', or 'nubra_uat'.")
 
     account_value = _account_from_funds(broker, mode)
     position_provider = BrokerPositionProvider(broker)
@@ -114,6 +116,23 @@ def _paper_components(ltp_override: Callable | None):
     return broker, None, ltp, lambda order: True, None  # no live market-data client in paper mode
 
 
+def _screen_components(config: dict, data_provider: MarketDataProvider | None):
+    """Screen-only: paper broker (orders are a no-op) + a real, session-less market-data
+    provider (Fyers). Lets the scanner run read-only with just a Fyers token — no Nubra
+    session. Since 'nubra' data needs a broker session, screen mode falls back to Fyers.
+    """
+    from services.nubra_client.equity_paper_trader import EquityPaperTrader
+    if data_provider is not None:
+        market_data = data_provider
+    else:
+        name = config.get("data_provider", "nubra")
+        if name == "nubra":
+            name = "fyers"  # nubra provider needs a session; use the session-less one
+        market_data = get_provider(name, config)
+    broker = EquityPaperTrader(ltp_provider=market_data.current_price)
+    return broker, None, market_data.current_price, lambda order: True, market_data
+
+
 def _nubra_uat_components(
     config: dict,
     whitelist: list[str],
@@ -144,8 +163,8 @@ def _nubra_uat_components(
 
 
 def _account_from_funds(broker, mode: str) -> Decimal:
-    if mode == "paper":
-        return Decimal("100000")  # 1 lakh virtual capital
+    if mode in ("paper", "screen"):
+        return Decimal("100000")  # 1 lakh virtual capital (sizing is illustrative in screen mode)
     # C4: live path — never fabricate capital. Zero margin → qty 0 → no order.
     funds = broker.get_funds()
     paise = int(funds.get("net_margin_available", 0))

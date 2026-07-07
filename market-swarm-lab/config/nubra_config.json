@@ -192,6 +192,11 @@
         "BPCL": ["bharat petroleum"],
         "ONGC": ["oil and natural gas"]
       }
+    },
+    "reddit": {
+      "enabled": true,
+      "subreddits": ["IndianStreetBets", "IndianStockMarket", "DalalStreetTalks"],
+      "limit": 15
     }
   },
   "delivery": {

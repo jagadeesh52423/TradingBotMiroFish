@@ -46,17 +46,26 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Weekly ranked watchlist (§2)")
     parser.add_argument("--universe")
     parser.add_argument("--json", action="store_true", help="print full JSON instead of the table")
+    parser.add_argument("--nubra", action="store_true",
+                        help="use the Nubra stack (needs a session); default is screen mode (Fyers only)")
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.WARNING),
                         format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+    # Screen mode reads market data from Fyers — load the token from .env.
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(pathlib.Path(__file__).resolve().parents[1] / ".env")
+    except ImportError:
+        pass
 
     config = load_config(_CONFIG_PATH)
     load_universes_from_config(config)
     name = args.universe or config.get("universe")
     config["whitelist"] = get_universe(name) if name else config["whitelist"]
 
-    runner = build_runner(config)
+    runner = build_runner(config, mode="nubra_uat" if args.nubra else "screen")
     summary = runner.run_once(dry_run=True)  # read-only
     ranked = _ranked(summary["results"])
 
