@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nubra Live Dashboard</title>
+<style>
+  body { font-family: monospace; background: #0d1117; color: #c9d1d9; margin: 0; padding: 16px; }
+  h1 { font-size: 1.1rem; color: #58a6ff; margin: 0 0 8px; }
+  #status-bar { font-size: 0.8rem; color: #8b949e; margin-bottom: 12px; }
+  #error-banner { display: none; background: #3d1a1a; border: 1px solid #f85149; color: #f85149;
+                  padding: 10px; border-radius: 4px; margin-bottom: 12px; font-size: 0.85rem; }
+  #sources { font-size: 0.78rem; color: #8b949e; margin-bottom: 12px; }
+  #futures-strip { display: flex; gap: 24px; align-items: center; background: #161b22;
+                   border: 1px solid #21262d; border-radius: 4px; padding: 8px 14px;
+                   margin-bottom: 14px; font-size: 0.88rem; flex-wrap: wrap; }
+  #futures-strip .fut-label { color: #8b949e; font-size: 0.75rem; margin-right: 6px; }
+  #futures-strip .fut-item { display: flex; gap: 8px; align-items: baseline; }
+  #futures-strip .fut-contract { color: #c9d1d9; font-weight: bold; letter-spacing: 0.02em; }
+  #futures-strip .fut-price { color: #e6edf3; }
+  #futures-strip .fut-up { color: #3fb950; }
+  #futures-strip .fut-down { color: #f85149; }
+  #futures-strip .fut-neutral { color: #8b949e; }
+  #futures-offline { color: #6e7681; font-size: 0.8rem; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.82rem; }
+  th { color: #8b949e; text-align: left; padding: 4px 8px; border-bottom: 1px solid #21262d; font-weight: normal; }
+  td { padding: 4px 8px; border-bottom: 1px solid #161b22; }
+  .buy  { color: #3fb950; font-weight: bold; }
+  .sell { color: #f85149; font-weight: bold; }
+  .hold { color: #8b949e; }
+  .skip { color: #6e7681; }
+  .err  { color: #f0883e; }
+  .scanning { color: #d29922; }
+  #spinner { display: none; color: #d29922; }
+</style>
+</head>
+<body>
+<h1>Nubra Live &mdash; Equity Scanner <span id="spinner">&#9679; scanning…</span></h1>
+<div id="status-bar">loading…</div>
+<div id="error-banner"></div>
+<div id="futures-strip"><span class="fut-label">INDEX FUTURES</span><span id="futures-content"><span id="futures-offline">—</span></span></div>
+<div id="sources"></div>
+<table>
+  <thead>
+    <tr>
+      <th>Symbol</th>
+      <th>Action</th>
+      <th>Upside %</th>
+      <th>Confidence</th>
+      <th>Sentiment</th>
+      <th>LTP (₹)</th>
+      <th>TFM</th>
+      <th>MiroFish</th>
+      <th>NSE</th>
+      <th>Skip reason</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<script>
+const POLL_MS = 15000;
+
+function fmt(v, digits) {
+  if (v == null) return '—';
+  return Number(v).toFixed(digits ?? 2);
+}
+
+function renderFutures(futures) {
+  const el = document.getElementById('futures-content');
+  if (!futures || futures.length === 0) {
+    el.innerHTML = '<span id="futures-offline">futures offline</span>';
+    return;
+  }
+  el.innerHTML = futures.map(f => {
+    const sign = f.forecast_pct > 0 ? '+' : '';
+    const cls = f.direction === 'bullish' ? 'fut-up'
+               : f.direction === 'bearish' ? 'fut-down'
+               : 'fut-neutral';
+    const arrow = f.direction === 'bullish' ? '▲' : f.direction === 'bearish' ? '▼' : '—';
+    return `<span class="fut-item">
+      <span class="fut-contract">${f.contract}</span>
+      <span class="fut-price">₹${Number(f.ltp).toLocaleString('en-IN', {minimumFractionDigits:2, maximumFractionDigits:2})}</span>
+      <span class="${cls}">${arrow} ${sign}${fmt(f.forecast_pct)}%</span>
+    </span>`;
+  }).join('');
+}
+
+function actionClass(a) {
+  return ({BUY:'buy', SELL:'sell', HOLD:'hold', SKIP:'skip', ERR:'err'})[a] ?? 'hold';
+}
+
+function ts(epoch) {
+  if (!epoch) return '—';
+  return new Date(epoch * 1000).toLocaleTimeString();
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/nubra/live');
+    const d = await res.json();
+
+    const errBanner = document.getElementById('error-banner');
+    const spinner   = document.getElementById('spinner');
+    const statusBar = document.getElementById('status-bar');
+    const sources   = document.getElementById('sources');
+    const tbody     = document.getElementById('rows');
+
+    // Futures strip (pinned above equity table)
+    renderFutures(d.futures ?? []);
+
+    // Spinner
+    spinner.style.display = d.scanning ? 'inline' : 'none';
+
+    // Error / offline banner
+    if (d.status !== 'ok') {
+      errBanner.style.display = 'block';
+      errBanner.textContent   = d.error ?? 'Scanner offline.';
+      if (d.hint) errBanner.textContent += '  ' + d.hint;
+    } else {
+      errBanner.style.display = 'none';
+    }
+
+    // Status bar
+    const sum = d.summary ?? {};
+    statusBar.textContent = [
+      'last scan: ' + ts(d.last_scan),
+      'next: ' + ts(d.next_scan),
+      'symbols: ' + (sum.symbols_processed ?? '—'),
+      'buy: ' + (sum.traded ?? '—'),
+      'skip: ' + (sum.skipped ?? '—'),
+      'err: ' + (sum.errors ?? '—'),
+    ].join('  |  ');
+
+    // Source health
+    const h = d.source_health ?? {};
+    sources.textContent = 'sources — nubra: ' + (h.nubra ?? '—') +
+      '  tfm: ' + (h.timesfm ?? '—') +
+      '  mirofish: ' + (h.mirofish ?? '—') +
+      '  nse: ' + (h.nse ?? '—');
+
+    // Rows
+    const rows = (d.rows ?? []).slice().sort((a, b) => {
+      const order = {BUY:0, SELL:1, HOLD:2, SKIP:3, ERR:4};
+      return (order[a.action] ?? 9) - (order[b.action] ?? 9);
+    });
+
+    tbody.innerHTML = rows.map(r => {
+      const cls = actionClass(r.action);
+      const modes = r.modes ?? {};
+      return `<tr>
+        <td>${r.symbol}</td>
+        <td class="${cls}">${r.action}</td>
+        <td>${fmt(r.upside_pct)}%</td>
+        <td>${fmt(r.confidence, 3)}</td>
+        <td>${r.nse_sentiment ?? '—'}</td>
+        <td>${fmt(r.ltp, 1)}</td>
+        <td>${modes.timesfm ?? '—'}</td>
+        <td>${modes.mirofish ?? '—'}</td>
+        <td>${modes.nse ?? '—'}</td>
+        <td>${r.skip_reason ?? ''}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    document.getElementById('status-bar').textContent = 'poll error: ' + e.message;
+  }
+}
+
+poll();
+setInterval(poll, POLL_MS);
+</script>
+</body>
+</html>

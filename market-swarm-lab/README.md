@@ -254,6 +254,46 @@ curl "http://localhost:8000/debug/timesfm?ticker=SPY"
 
 ---
 
+## Live Dashboard (Nubra equity)
+
+Watch the Nubra scanner in real time — auto-refreshes every 15 s.
+
+### Prerequisites
+
+Login once to cache your Nubra session (~7-day expiry):
+
+```bash
+python3.11 scripts/nubra_login.py
+```
+
+### Start
+
+```bash
+./start_nubra_dashboard.sh
+# then open: http://localhost:8000/nubra/dashboard
+```
+
+Or manually:
+
+```bash
+NUBRA_LIVE=1 NUBRA_LIVE_INTERVAL=900 \
+  python3.11 -m uvicorn apps.api.main:app --port 8000
+```
+
+### JSON endpoint
+
+```bash
+curl http://localhost:8000/nubra/live | jq .
+```
+
+Returns `status`, `rows` (symbol / action / upside_pct / confidence / ltp / modes), `source_health`, `last_scan`, and `next_scan`.
+
+The scanner always runs `dry_run=True` — read-only, no orders placed.
+
+A **pinned top strip** above the equity table shows NIFTY and BANKNIFTY index futures (nearest-expiry contract, live LTP, and a modelled 5-day move %) whenever a Nubra session is active.
+
+---
+
 ## Key Design Decisions
 
 ### Fallback Priority
@@ -470,6 +510,50 @@ MIROFISH_BASE_URL=<server url> # the real 100-agent LLM swarm (reads the NSE fil
 ```
 
 See [`docs/superpowers/specs/2026-06-16-nubra-uat-integration-design.md`](docs/superpowers/specs/2026-06-16-nubra-uat-integration-design.md) for the full design.
+
+---
+
+## NSE Catalyst Mean-Reversion Screener (research)
+
+A rule-based screener + backtest for Indian catalyst-driven swing setups, built and walk-forward
+validated over 2025–2026 data. **Research tool — EXPLORATORY, not investment advice, not tradeable-ready.**
+Full spec: [`docs/catalyst_meanreversion_system.md`](docs/catalyst_meanreversion_system.md).
+Findings log: [`SELF_IMPROVEMENT_LOG.md`](SELF_IMPROVEMENT_LOG.md).
+
+### The system (rules that survived testing)
+Buy **liquid, non-earnings** NSE catalyst names that are **beaten-down** (below their 20-day MA),
+**hold ~20 days**, **time-exit (no tight stop)**, and only trade when the **small-cap market regime**
+is up. Each rule earned its place from the data:
+- **Exclude earnings** — Results events fade (−1 to −2% median).
+- **Liquid only** (median turnover > ~₹1cr) — removes micro-cap noise.
+- **Below 20-day MA** — mean-reversion outperforms momentum here (opposite of the US breakout playbook).
+- **Regime gate** — the edge is regime-dependent (positive in up-markets, ~flat all-in); the gate is essential.
+
+### Run it (screens current NSE catalysts)
+```bash
+cd market-swarm-lab
+python3.11 scripts/run_catalyst_screener.py          # market-wide (default), ranked candidates
+python3.11 scripts/run_catalyst_screener.py --universe nifty50
+```
+Prints ranked candidates (regime-OK first): symbol, catalyst type, date, close, % below 20-day MA,
+turnover, regime flag, and the hold thesis. Loudly labeled EXPLORATORY.
+
+### Data sources
+| Source | Role | Status |
+|---|---|---|
+| NSE event-calendar API | Dated catalysts (the signal) | **Active** — `services/nse_event_calendar/` |
+| yfinance (`SYMBOL.NS`) | Daily OHLCV, decades of history, free | **Active** (default price source) |
+| Fyers (OHLC + intraday + NIFTY index) | Intraday/high-low data | **Active, optional** — `services/fyers_client/` (daily token) |
+| NSE delivery bhavcopy (`DELIV_PER`) | Delivery-% filter | **Built, OFF by default** — tested negative (no hit-rate lift) |
+| NSE pre-open / price-band (circuits) / bulk-deals / ASM | Surveyed | **Not wired** — API-accessible, candidates for future work |
+
+### What the backtests found (honest)
+- **Beats naive** catalyst-buying on both return and hit-rate — but only **regime-gated** (up-markets); ~flat all-in.
+- **A stop hurts it** — confirmed on live Fyers intrabar data; use time-exit.
+- **Circuits aren't a blocker** for the liquid candidate set.
+- **Delivery %** — ruled out as a filter (deletes 61–88% of trades for no lift).
+- **News buzz** (Google News) — the one promising, under-powered lead worth more sample.
+- **Remaining gap:** a **forward paper-trade** (real-time entries, live regime, costs) — the one thing no backtest settles.
 
 ---
 

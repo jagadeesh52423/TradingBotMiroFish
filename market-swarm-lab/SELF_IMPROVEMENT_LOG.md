@@ -42,3 +42,19 @@ Wired delivery % (NSE `sec_bhavdata_full` bhavcopy, DELIV_PER, historical ≥1yr
 - **n-shrink is genuine selection, not a coverage gap** — 95% of candidates have PIT delivery data (reviewer measured); median deliv% 48.5%, only 33% clear the 55 floor. So the "no lift" conclusion isn't confounded.
 - **Decision: keep the delivery filter OFF by default (unchanged system).** Code stays as an off-by-default option. **Promote:** a filter that shrinks n without lifting the rate beyond ~1 binomial SE is not an edge — always report per-bucket n + SE, never eyeball a small-n rate as a win.
 - Plausible future: delivery as a ranking/sizing signal rather than a hard gate (gating just deletes sample) — low priority given the gate showed zero signal.
+
+## 2026-07-06 — AI catalyst-quality gate (tested → clean NEGATIVE in the one powered window)
+
+Built an LLM directional-quality scorer (`services/nse_event_calendar/ai_catalyst_scorer.py`, via LiteLLM proxy, degrade-to-keyword on disabled/no-creds/proxy-failure) and a walk-forward runner (`scripts/ai_catalyst_walkforward.py`) to test whether gating the mean-reversion catalyst system to only "AI-bullish" announcements lifts its hit rate. Reviewed for PIT (next-day entry both arms, no lookahead in the text-fetch window) before running; live run 284 candidates, 271 scored via AI (**0 degraded** — proxy genuinely live, confirmed by `engine=="ai"` on sampled calls), 45 bullish (226 removed by the gate, 83% cut).
+
+Coverage-clean comparison, `baseline_with_text` vs `ai_bullish` per window:
+- **0-3mo:** 60.4% (n=53) vs 60.0% (n=5) — identical rate; n=5 is noise, not a read.
+- **3-6mo (the only well-powered window):** 57.3% (n=124, median +4.23%) vs 41.7% (n=24, median −3.25%) — AI-bullish **hurts** by ~1.5 binomial SE.
+- **6-9mo:** 38.3% (n=94) vs 50.0% (n=16) — +11.7pp but under 1 SE (n=16) — noise, not a win.
+- Regime∩AI-bullish buckets are all n=0-1 — no usable signal, can't be read either way.
+
+**Decision: clean negative-to-null, same shape as the delivery filter.** In the one adequately-powered window it actively degrades the system; the apparent lifts in the other two windows are both sub-1-SE and must not be quoted as wins. Keep the scorer + runner as off-by-default research code (`nse.ai_catalyst.enabled=false` by default).
+
+**Interpretation:** the underlying system selects on mean-reversion (event-day close below 20d SMA). An LLM directional-bullish judgment is a **momentum-axis** signal — it verifiably understands the announcements (spot-checked: BANDHANBNK correctly scored bullish, NETWEB correctly neutral) but is scoring the wrong axis for this setup, so gating on it selects *against* the oversold edge the system is harvesting. **Promote:** a directional/quality signal must be checked against the setup's actual edge axis before wiring it as a gate — momentum-flavored signals should be expected to hurt a mean-reversion selection, not help it, regardless of how well the signal itself is calibrated.
+
+**Ops note (harness, not the experiment):** the runner's text cache only flushes at end-of-run, so mid-run cache-size checks read as 0 even while the run is healthy — don't mistake that for a stall. `nse.ai_catalyst.enabled` was missing from `config/nubra_config.json` (defaults False) on first attempt — silently would have run keyword-only; added `"ai_catalyst": {"enabled": true}` to the `nse` block and verified via a direct `engine=="ai"` smoke test before the full run.

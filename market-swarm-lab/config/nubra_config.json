@@ -101,10 +101,17 @@
     "lookback_days": 7,
     "cache_ttl_seconds": 900,
     "sentiment_engine": "ai",
-    "ai_model": "claude-sonnet-4-5-20250929"
+    "ai_model": "claude-sonnet-4-5-20250929",
+    "ai_catalyst": {
+      "enabled": false
+    }
   },
   "runner": {
     "max_workers": 3,
     "inter_batch_sleep_secs": 0.5
+  },
+  "futures": {
+    "provider": "nubra_futures",
+    "underlyings": ["NIFTY", "BANKNIFTY"]
   }
 }
