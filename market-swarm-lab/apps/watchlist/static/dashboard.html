@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Playbook Watchlist</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --panel2:#1c2230; --line:#2a3140; --fg:#e6edf3;
+    --muted:#8b98a9; --green:#2ea043; --greenbg:#122117; --red:#d5433a; --redbg:#1f1414;
+    --amber:#d29922; --accent:#4c8bf5; --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:light){
+    :root{--bg:#f6f8fa;--panel:#fff;--panel2:#f0f3f7;--line:#d5dbe2;--fg:#1c2128;
+      --muted:#5a6675;--greenbg:#e7f6ec;--redbg:#fdeceb;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:18px 22px;border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;
+    gap:14px 22px;align-items:center;position:sticky;top:0;background:var(--bg);z-index:5}
+  h1{font-size:16px;margin:0;font-weight:650;letter-spacing:.2px}
+  h1 small{color:var(--muted);font-weight:400;margin-left:8px}
+  select,input{background:var(--panel);color:var(--fg);border:1px solid var(--line);
+    border-radius:7px;padding:6px 9px;font-size:13px}
+  .chips{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+  .chip{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:4px 12px;
+    font-size:12px;color:var(--muted)}
+  .chip b{color:var(--fg);font-variant-numeric:tabular-nums}
+  .chip.el b{color:var(--green)} .chip.dr b{color:var(--red)}
+  .filters{display:flex;gap:8px;align-items:center}
+  .seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+  .seg button{background:var(--panel);color:var(--muted);border:0;padding:6px 12px;font-size:12px;cursor:pointer}
+  .seg button.on{background:var(--accent);color:#fff}
+  main{padding:16px 22px 60px}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:right;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  th:first-child,td:first-child,th.l,td.l{text-align:left}
+  th{position:sticky;top:63px;background:var(--bg);color:var(--muted);font-weight:550;
+    cursor:pointer;user-select:none;font-size:12px}
+  tbody tr:hover{background:var(--panel2)}
+  td.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .sym{font-weight:650}
+  .badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11px;font-weight:600}
+  .badge.elected{color:var(--green);background:var(--greenbg);border:1px solid var(--green)}
+  .badge.dropped{color:var(--red);background:var(--redbg);border:1px solid var(--red)}
+  tr.dropped{color:var(--muted)}
+  tr.dropped .sym{color:var(--fg);opacity:.75}
+  .reason{color:var(--muted);font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis}
+  .up{color:var(--green)} .dn{color:var(--red)}
+  .note{color:var(--muted);font-size:12px;margin-top:14px}
+  .empty{padding:40px;text-align:center;color:var(--muted)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🐟 Playbook Watchlist <small id="sub">loading…</small></h1>
+  <div class="filters">
+    <label style="color:var(--muted);font-size:12px">Run</label>
+    <select id="runSel"></select>
+    <div class="seg" id="seg">
+      <button data-f="all" class="on">All</button>
+      <button data-f="elected">Elected</button>
+      <button data-f="dropped">Dropped</button>
+    </div>
+    <input id="search" placeholder="filter symbol…" size="12">
+  </div>
+  <div class="chips" id="chips"></div>
+</header>
+<main>
+  <table id="tbl">
+    <thead><tr>
+      <th class="l" data-k="symbol">Symbol</th>
+      <th class="l" data-k="status">Status</th>
+      <th data-k="trade" class="l">Trade</th>
+      <th data-k="score">Score</th>
+      <th data-k="upside_pct">Upside %</th>
+      <th data-k="band_pct">Band %</th>
+      <th data-k="pcr">PCR</th>
+      <th data-k="catalyst_stack">Stack</th>
+      <th data-k="sentiment" class="l">News</th>
+      <th data-k="catalyst" class="l">Catalyst</th>
+      <th data-k="entry_ltp">LTP</th>
+      <th class="l" data-k="reason">Reason</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div id="empty" class="empty" style="display:none"></div>
+  <div class="note">Elected = passed every playbook gate. Dropped = blocked (reason shown). EXPLORATORY screening — not investment advice.</div>
+</main>
+<script>
+let RUN=null, FILTER="all", SORT={k:null,dir:-1};
+const $=s=>document.querySelector(s);
+const fmt=(v,d=2)=>v==null?"–":(typeof v==="number"?v.toFixed(d):v);
+
+async function loadRuns(){
+  const runs=await (await fetch("/api/runs")).json();
+  const sel=$("#runSel"); sel.innerHTML="";
+  if(!runs.length){ $("#sub").textContent="no runs yet"; showEmpty("No runs saved. Run: python3 scripts/weekly_watchlist.py --save"); return; }
+  runs.forEach(r=>{ const o=document.createElement("option");
+    o.value=r.run_id; o.textContent=`${r.run_date}  ·  ${r.counts.elected}/${r.counts.total} elected  ·  ${r.universe}`;
+    sel.appendChild(o); });
+  sel.onchange=()=>loadRun(sel.value);
+  loadRun(runs[0].run_id);
+}
+async function loadRun(id){
+  RUN=await (await fetch("/api/run/"+encodeURIComponent(id))).json();
+  $("#sub").textContent=`${RUN.run_date} · ${RUN.universe} · ${RUN.sentiment_engine||""} engine · generated ${new Date(RUN.generated_at).toLocaleString()}`;
+  const c=RUN.counts;
+  $("#chips").innerHTML=`<span class="chip">total <b>${c.total}</b></span>
+     <span class="chip el">elected <b>${c.elected}</b></span>
+     <span class="chip dr">dropped <b>${c.dropped}</b></span>`;
+  render();
+}
+function showEmpty(m){ $("#empty").style.display="block"; $("#empty").textContent=m; $("#tbl").style.display="none"; }
+function render(){
+  if(!RUN) return;
+  let rows=RUN.symbols.slice();
+  if(FILTER!=="all") rows=rows.filter(r=>r.status===FILTER);
+  const q=$("#search").value.trim().toUpperCase();
+  if(q) rows=rows.filter(r=>(r.symbol||"").includes(q));
+  if(SORT.k) rows.sort((a,b)=>{const x=a[SORT.k],y=b[SORT.k];
+    if(x==null)return 1; if(y==null)return -1; return (x>y?1:x<y?-1:0)*SORT.dir;});
+  const tb=$("#rows"); tb.innerHTML="";
+  $("#tbl").style.display=""; $("#empty").style.display="none";
+  if(!rows.length){ showEmpty("No rows match."); return; }
+  for(const r of rows){
+    const tr=document.createElement("tr"); tr.className=r.status;
+    const up=r.upside_pct; const upCls=up>0?"up":up<0?"dn":"";
+    tr.innerHTML=`<td class="l sym">${r.symbol}</td>
+      <td class="l"><span class="badge ${r.status}">${r.status}</span></td>
+      <td class="l">${r.trade||"–"}</td>
+      <td class="num">${fmt(r.score,3)}</td>
+      <td class="num ${upCls}">${up==null?"–":fmt(up,1)}</td>
+      <td class="num">${fmt(r.band_pct,1)}</td>
+      <td class="num">${fmt(r.pcr,2)}</td>
+      <td class="num">${r.catalyst_stack??"–"}</td>
+      <td class="l">${r.sentiment||"–"}</td>
+      <td class="l reason" title="${(r.catalyst_type?r.catalyst_type+': ':'')+(r.catalyst||'')}">${r.catalyst?((r.catalyst_type?r.catalyst_type+' · ':'')+r.catalyst):"–"}</td>
+      <td class="num">${fmt(r.entry_ltp,1)}</td>
+      <td class="l reason" title="${r.reason||""}">${r.reason||""}</td>`;
+    tb.appendChild(tr);
+  }
+}
+$("#seg").onclick=e=>{ if(e.target.dataset.f){ FILTER=e.target.dataset.f;
+  document.querySelectorAll("#seg button").forEach(b=>b.classList.toggle("on",b===e.target)); render(); }};
+$("#search").oninput=render;
+document.querySelectorAll("th[data-k]").forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k; SORT.dir=SORT.k===k?-SORT.dir:-1; SORT.k=k; render(); });
+loadRuns();
+</script>
+</body>
+</html>

@@ -102,7 +102,7 @@ class TestConfigUniverses:
 
     def test_default_universe_and_provider(self):
         cfg = _load_config()
-        assert cfg["universe"] == "nifty50"
+        assert cfg["universe"] == "catalyst"  # default is now catalyst-driven discovery (playbook §2)
         assert cfg["data_provider"] == "nubra"
 
 

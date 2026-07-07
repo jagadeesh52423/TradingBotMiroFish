@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from services.nubra_client.equity_runner import build_runner, load_config
-from services.nubra_client.universe_registry import get_universe, load_universes_from_config
+from services.nubra_client.universe_registry import resolve_universe, load_universes_from_config
 
 _CONFIG_PATH = pathlib.Path(__file__).resolve().parents[1] / "config" / "nubra_config.json"
 
@@ -48,6 +48,7 @@ def main(argv=None) -> None:
     parser.add_argument("--json", action="store_true", help="print full JSON instead of the table")
     parser.add_argument("--nubra", action="store_true",
                         help="use the Nubra stack (needs a session); default is screen mode (Fyers only)")
+    parser.add_argument("--save", action="store_true", help="persist this run to MongoDB (dashboard/backtest)")
     parser.add_argument("--log-level", default="WARNING")
     args = parser.parse_args(argv)
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.WARNING),
@@ -63,7 +64,8 @@ def main(argv=None) -> None:
     config = load_config(_CONFIG_PATH)
     load_universes_from_config(config)
     name = args.universe or config.get("universe")
-    config["whitelist"] = get_universe(name) if name else config["whitelist"]
+    config["whitelist"] = resolve_universe(config, name)  # "catalyst" → live discovery (playbook §2)
+    print(f"# universe '{name}' → {len(config['whitelist'])} names", flush=True)
 
     runner = build_runner(config, mode="nubra_uat" if args.nubra else "screen")
     summary = runner.run_once(dry_run=True)  # read-only
@@ -73,6 +75,26 @@ def main(argv=None) -> None:
         print(json.dumps(ranked, indent=2, default=str))
     else:
         _print_table(ranked)
+
+    if args.save:
+        _save_run(summary["results"], name, config)
+
+
+def _save_run(results, universe, config) -> None:
+    from datetime import datetime, timedelta, timezone
+    from services.watchlist_store.run_to_doc import run_to_doc
+    from services.watchlist_store.mongo_store import WatchlistStore
+    now = datetime.now(timezone(timedelta(hours=5, minutes=30)))
+    doc = run_to_doc(results, universe=universe or "catalyst", run_date=now.date().isoformat(),
+                     generated_at=now, sentiment_engine=config.get("nse", {}).get("sentiment_engine"),
+                     catalyst_map=config.get("catalyst_map"))
+    try:
+        store = WatchlistStore()
+        rid = store.save_run(doc)
+        store.close()
+        print(f"# saved run {rid} to MongoDB ({doc['counts']})", flush=True)
+    except Exception as exc:  # Mongo down / unreachable — don't lose the screen output
+        print(f"# WARNING: could not save to MongoDB: {exc}", flush=True)
 
 
 if __name__ == "__main__":

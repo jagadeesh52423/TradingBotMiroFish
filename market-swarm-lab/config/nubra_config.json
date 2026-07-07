@@ -1,7 +1,15 @@
 {
   "env": "UAT",
   "data_provider": "nubra",
-  "universe": "nifty50",
+  "universe": "catalyst",
+  "discovery": {
+    "lookahead_days": 10,
+    "lookback_days": 3,
+    "max_symbols": 150,
+    "exclude_surveillance": true,
+    "min_turnover_cr": 5.0,
+    "bhavcopy_lookback": 6
+  },
   "whitelist": [
     "ADANIGREEN","ADANIPORTS","ADANIPOWER","APOLLO","ASIANPAINT",
     "AXISBANK","BAJAJFINSV","BAJFINANCE","BHARTIARTL","BPCL",
@@ -66,11 +74,11 @@
   "validity": "DAY",
   "limit_offset_pct": 0.0,
   "risk_per_trade_pct": 0.5,
-  "max_trades_per_day": 5,
+  "max_trades_per_day": 1000,
   "session_file_dir": "~",
   "instrument_cache_ttl_hours": 12,
   "entry_threshold": {
-    "min_expected_upside_pct": 2.0,
+    "min_expected_upside_pct": 0.0,
     "per_symbol": {},
     "max_horizon_days": null,
     "circuit_gate": {
@@ -139,7 +147,7 @@
       "neg_threshold": -0.3,
       "weak_confidence": 0.55
     },
-    "min_confidence_threshold": 0.60,
+    "min_confidence_threshold": 0.0,
     "min_bars_for_signal": 10,
     "news_only": {
       "buy_threshold": 0.15,

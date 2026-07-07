@@ -225,7 +225,8 @@ class NubraEquityRunner:
         band = signal.get("band_pct")
         trend = self._sector_provider.trend(symbol) if self._sector_provider else None
         factors = {
-            "catalyst": min(1.0, abs(float(score))) if score is not None else None,
+            # directional: a BUY watchlist rewards BULLISH news; bearish news → 0 (not magnitude).
+            "catalyst": max(0.0, min(1.0, float(score))) if score is not None else None,
             "band": min(1.0, float(band) / 20.0) if band is not None else None,  # wider = more tradeable
             "liquidity": min(1.0, float(delivery_pct) / 100.0) if delivery_pct is not None else None,
             "sector": {"up": 1.0, "down": 0.0}.get(trend),  # None when unmapped/unknown

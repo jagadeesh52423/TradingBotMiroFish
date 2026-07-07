@@ -32,3 +32,17 @@ def get_universe(name: str) -> list[str]:
             f"Unknown universe {name!r}. Available: {sorted(_UNIVERSE_REGISTRY)}"
         )
     return _UNIVERSE_REGISTRY[name]
+
+
+def resolve_universe(config: dict, name: str | None) -> list[str]:
+    """Resolve the active symbol list. ``name == "catalyst"`` builds the universe from
+    live catalyst discovery (playbook §2); any other name comes from the registry;
+    None falls back to config["whitelist"]."""
+    if name == "catalyst":
+        from services.nubra_client.catalyst_discovery import CatalystDiscovery
+        detailed = CatalystDiscovery.from_config(config).discover_detailed()
+        config["catalyst_map"] = detailed  # {symbol: catalyst_info} — carried into the run doc
+        return sorted(detailed)
+    if name:
+        return get_universe(name)
+    return config.get("whitelist", [])

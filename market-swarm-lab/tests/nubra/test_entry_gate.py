@@ -251,9 +251,9 @@ class TestEquityOrderHandlerEntryGate:
         """Handler with entry_gates=None builds a default gate from nubra_config.json."""
         broker = _Broker()
         handler = _handler(tmp_path, broker, gates=None)
-        # Config has min_expected_upside_pct: 2.0; signal is 0.5% → blocked
+        # Config floor is now min_expected_upside_pct: 0.0; a NEGATIVE-upside CALL is still blocked.
         signal = {"ticker": "SBIN", "trade": "CALL", "signal_id": "s6",
-                  "expected_move_pct": 0.005, "horizon": "1d"}
+                  "expected_move_pct": -0.02, "horizon": "1d"}
         result = handler.handle(signal, {"approved": True}, "SBIN")
         assert result["status"] == "below_threshold"
 

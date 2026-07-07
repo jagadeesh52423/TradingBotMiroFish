@@ -448,6 +448,70 @@ Runs the MiroFish agent pipeline against **Nubra (Indian broker) UAT** for **48 
 
 > Use **`python3.11`** — the test/runtime interpreter that has the deps. The default `python`/`python3` may be 2.7 / a venv without them.
 
+---
+
+### ⭐ Recommended default: the India Catalyst Swing **playbook screener** (no Nubra needed)
+
+By default the pipeline now applies the **India Catalyst Swing Playbook** ([`docs/india_swing_playbook.md`](docs/india_swing_playbook.md)) — a set of India-specific entry gates and conviction flags — and you can run it **read-only with just a Fyers token, no Nubra session**, via the broker-less **screen mode**.
+
+```bash
+cd market-swarm-lab
+python3 scripts/fyers_login.py         # mint the daily Fyers token (interactive, ~once/morning)
+python3 scripts/weekly_watchlist.py    # ranked probables, screen mode (Fyers only) — no orders
+# python3 scripts/weekly_watchlist.py --universe nifty50      # pin to a fixed index list instead
+# python3 scripts/weekly_watchlist.py --nubra                 # opt back into the Nubra order stack
+```
+
+**Universe = catalyst discovery (default).** Per playbook §2, the universe is built *live* from
+names that have a fresh catalyst — the NSE event calendar (upcoming board meetings) + recent
+market-wide corporate announcements — **not** a fixed index list (`universe: "catalyst"` in config,
+tunable under `discovery`). Pass `--universe nifty50`/`midcap150` to pin a fixed list instead.
+Only the playbook gates apply — the old non-playbook caps (min-upside 2%, max-trades 5,
+min-confidence) have been removed.
+
+Discovery applies the playbook's own liquidity/safety filters (§2 liquidity; §1/§11 illiquid-
+circuit-lock trap): **NSE ASM/GSM-surveilled names are excluded**, and names below a **daily-turnover
+floor (₹5 cr, from the sec-bhavcopy)** are dropped — so a market-wide sweep doesn't surface penny/
+caution-flagged micro-caps. Tune via `discovery.min_turnover_cr` / `discovery.exclude_surveillance`.
+
+#### Persist runs + dashboard + backtest (MongoDB)
+
+Each run can be saved to MongoDB (one doc/run: every screened symbol with **status** `elected`/`dropped`,
+the **reason** if dropped, plus score/trade/band/PCR/sentiment/entry-LTP). Powers a dashboard and backtest.
+
+```bash
+# 1. Mongo (default mongodb://localhost:27017, override with MONGO_URI):
+mongod --dbpath ~/.mongo-msl/data --port 27017        # or a mongo docker container
+
+# 2. Run the screener and save the run:
+python3 scripts/weekly_watchlist.py --save
+
+# 3. Dashboard — browse latest run + history (elected/dropped, reasons, sortable):
+uvicorn apps.watchlist.app:app --port 8100            # open http://localhost:8100/
+
+# 4. Backtest — forward return of elected picks vs live Fyers price:
+python3 scripts/backtest_watchlist.py
+```
+
+Every candidate is put through the playbook and ranked by a **5-factor watchlist score** (catalyst / sector / circuit-band / liquidity / F&O). What runs by default (all fail-open, all config-toggled under `entry_threshold.*` / `news.*`):
+
+| Playbook | Gate / flag |
+|---|---|
+| §1 Circuit filters | **blocks a BUY** pinned near its upper circuit (Fyers `depth()` band) + circuit-aware position sizing (§5) |
+| §3/§4 First-15-min | **blocks a BUY** whose opening gap faded below the day open (intraday) |
+| §10/§11 Sector rotation | **blocks a BUY** whose NSE sector index is trending down |
+| §2 Watchlist | 5-factor ranking score + factor breakdown |
+| §5 Targets | T1/T2 scale-out levels on each entry |
+| §7 Catalyst stacking | count of distinct news sources firing |
+| §8 Conviction | delivery-% + F&O PCR (descriptive, never gates) |
+| §3 Pre-open | indicative gap + book-qty conviction (live pre-open window) |
+| §9 News | 6 sources → one blended sentiment: **NSE filings, Google News, USFDA, insider (SAST/PIT), PIB, Reddit** |
+| §13 Tracker | per-trade circuit-band + exit-fill fields; `scripts/expectancy_report.py` |
+
+> **This is a screening/research framework — EXPLORATORY, not investment advice, not tradeable-ready.** The playbook itself says so on its first line. `weekly_watchlist.py` always runs `dry_run=True` (no orders). Catalyst discovery is market-wide, so it surfaces illiquid small-caps too (wide circuit bands, no F&O) — the playbook's liquidity/F&O factors down-weight these in the score, but do not hard-filter them (per playbook, cash-only catalyst names are tradeable).
+
+Fyers token is **daily** (re-run `scripts/fyers_login.py` each morning). Reddit needs `REDDIT_CLIENT_ID`/`SECRET` in `.env` to go live (fixtures otherwise). The sections below cover the **Nubra order path** (only needed to place live/paper orders).
+
 ### One-time setup
 
 ```bash
