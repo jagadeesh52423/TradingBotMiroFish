@@ -30,6 +30,12 @@ from services.nubra_client.circuit_status import FyersCircuitProvider, NseCircui
 from services.nubra_client.sector_trend import SectorTrendProvider
 from services.nubra_client.first_fifteen import FirstFifteenProvider
 from services.nse_delivery.delivery_collector import NseDeliveryCollector
+from services.nubra_client.watchlist_scorer import watchlist_score
+from services.nubra_client.trade_targets import scale_out_targets
+from services.nubra_client.fno_oi import FyersOptionProvider, pcr_label
+from services.nubra_client.time_stop import stale_symbols
+from services.nubra_client.entry_ledger import EntryLedger
+from services.nubra_client.pre_open import PreOpenCollector, pre_open_conviction
 from services.nubra_client.position_sizing import band_pct_from_circuit, band_size_factor
 from services.nubra_client.equity_assembly import build_equity_stack
 from services.nubra_client.equity_context_builder import build_equity_context
@@ -84,6 +90,7 @@ class NubraEquityRunner:
         et_cfg = config.get("entry_threshold", {})
         self._extra_gates: list = list(extra_gates) if extra_gates is not None else []
         self._circuit_provider = None  # reused for circuit-aware sizing (§5)
+        self._sector_provider = None   # reused for watchlist scoring (§2)
         if not self._extra_gates:
             cg_cfg = et_cfg.get("circuit_gate", {})
             if circuit_gate is not None:
@@ -97,7 +104,8 @@ class NubraEquityRunner:
                 )
                 self._extra_gates.append(CircuitStatusGate(self._circuit_provider, cg_cfg))
             if et_cfg.get("sector_gate", {}).get("enabled"):
-                self._extra_gates.append(SectorTrendGate(SectorTrendProvider.from_config(config)))
+                self._sector_provider = SectorTrendProvider.from_config(config)
+                self._extra_gates.append(SectorTrendGate(self._sector_provider))
             if et_cfg.get("first15_gate", {}).get("enabled"):
                 self._extra_gates.append(FirstFifteenGate(FirstFifteenProvider.from_config(config)))
         ps_cfg = et_cfg.get("position_sizing", {})
@@ -107,6 +115,21 @@ class NubraEquityRunner:
         dv_cfg = config.get("delivery", {}).get("conviction_flag", {})
         self._delivery = NseDeliveryCollector.from_config(config) if dv_cfg.get("enabled") else None
         self._delivery_n = int(dv_cfg.get("trailing_days", 20))
+        wl_cfg = config.get("watchlist", {})
+        self._watchlist_enabled = bool(wl_cfg.get("enabled", True))
+        self._watchlist_weights = wl_cfg.get("weights")
+        tg_cfg = et_cfg.get("targets", {})
+        self._targets_enabled = bool(tg_cfg.get("enabled", True))
+        self._targets_cfg = tg_cfg
+        fno_cfg = config.get("fno", {}).get("conviction_flag", {})
+        self._option_provider = FyersOptionProvider.from_config(config) if fno_cfg.get("enabled") else None
+        ts_cfg = et_cfg.get("time_stop", {})
+        self._time_stop_enabled = bool(ts_cfg.get("enabled"))
+        self._max_sessions = int(ts_cfg.get("max_sessions", 3))
+        self._entry_ledger = EntryLedger() if self._time_stop_enabled else None
+        po_cfg = config.get("pre_open", {}).get("conviction_flag", {})
+        self._preopen = PreOpenCollector.from_config(config) if po_cfg.get("enabled") else None
+        self._preopen_cfg = po_cfg
         self._min_bars: int = int(config.get("signal", {}).get("min_bars_for_signal", 10))
         self._nubra_client = nubra_client
         self._stack = equity_stack
@@ -168,6 +191,47 @@ class NubraEquityRunner:
 
     # ----------------------------------------------------------------- private
 
+    def _pre_open_flag(self, symbol: str) -> dict:
+        """§3/§11 soft pre-open conviction: indicative gap + book qty. Never gates."""
+        empty = {"pre_open_gap_pct": None, "pre_open_qty": None, "pre_open_iep": None,
+                 "pre_open_conviction": None}
+        if self._preopen is None:
+            return empty
+        st = self._preopen.status(symbol)
+        if not st:
+            return empty
+        return {"pre_open_gap_pct": st.get("gap_pct"), "pre_open_qty": st.get("qty"),
+                "pre_open_iep": st.get("iep"),
+                "pre_open_conviction": pre_open_conviction(st.get("gap_pct"), st.get("qty"), self._preopen_cfg)}
+
+    def _fno_flag(self, symbol: str) -> dict:
+        """§8 descriptive F&O positioning: PCR + call/put OI + availability. Never gates."""
+        empty = {"pcr": None, "pcr_label": None, "call_oi": None, "put_oi": None, "fno_available": None}
+        if self._option_provider is None:
+            return empty
+        s = self._option_provider.summary(symbol)
+        if not s:
+            return {**empty, "fno_available": False}
+        return {"pcr": s["pcr"], "pcr_label": pcr_label(s["pcr"]),
+                "call_oi": s["call_oi"], "put_oi": s["put_oi"], "fno_available": True}
+
+    def _watchlist(self, symbol: str, nse_result: dict, signal: dict, delivery_pct) -> dict:
+        """§2 5-factor score. Each factor 0..1; missing factors renormalise out (see scorer)."""
+        if not self._watchlist_enabled:
+            return {"score": None, "factors": {}}
+        score = nse_result.get("sentiment_score")
+        band = signal.get("band_pct")
+        trend = self._sector_provider.trend(symbol) if self._sector_provider else None
+        factors = {
+            "catalyst": min(1.0, abs(float(score))) if score is not None else None,
+            "band": min(1.0, float(band) / 20.0) if band is not None else None,  # wider = more tradeable
+            "liquidity": min(1.0, float(delivery_pct) / 100.0) if delivery_pct is not None else None,
+            "sector": {"up": 1.0, "down": 0.0}.get(trend),  # None when unmapped/unknown
+            "fno": signal.get("fno_factor"),  # populated by the F&O OI task (§8); None until then
+        }
+        result = watchlist_score(factors, self._watchlist_weights)
+        return {"score": result["score"], "factors": result["factors"]}
+
     def _delivery_flag(self, symbol: str) -> dict:
         """Soft delivery-% conviction (§8): 'high' if today's deliv% >= its trailing avg (real
         accumulation), else 'low'; None fields when the collector has no figure. Never blocks."""
@@ -192,6 +256,27 @@ class NubraEquityRunner:
             return
         signal["band_pct"] = round(band, 2)
         signal["size_factor"] = band_size_factor(band, self._band_tiers)
+
+    def run_time_stop_exits(self, held_symbols, today=None, *, dry_run: bool = False) -> dict:
+        """§5 time-stop: close held positions aged >= max_sessions. Circuit-lock aware —
+        a lower-circuit-locked name can't be sold, so it's flagged (skipped_locked), not cleared."""
+        if self._entry_ledger is None:
+            return {"exited": [], "skipped_locked": [], "reason": "disabled"}
+        today = today or _ist_today()
+        held = {str(s).upper() for s in held_symbols}
+        stale = stale_symbols(self._entry_ledger.entries(), held, today, self._max_sessions)
+        exited, locked = [], []
+        for sym in stale:
+            st = self._circuit_provider.status(sym) if self._circuit_provider else None
+            if st and st.get("lower") and st.get("last") and st["last"] <= st["lower"] * 1.001:
+                locked.append(sym)  # unsellable at lower circuit — carry, don't clear
+                continue
+            signal = {"trade": "PUT", "ticker": sym, "signal_id": f"timestop-{sym}-{today.isoformat()}"}
+            if not dry_run:
+                self._stack.registry.dispatch("equity", signal, {"approved": True}, sym)
+            self._entry_ledger.clear(sym)
+            exited.append(sym)
+        return {"exited": exited, "skipped_locked": locked, "as_of": today.isoformat(), "dry_run": dry_run}
 
     def _process_symbol(self, symbol: str, *, dry_run: bool) -> dict[str, Any]:
         if self._nubra_client is None:
@@ -285,6 +370,10 @@ class NubraEquityRunner:
             if forecast is not None
             else None
         )
+        delivery_flag = self._delivery_flag(symbol)  # computed once, reused by watchlist below
+        fno_flag = self._fno_flag(symbol)
+        # F&O availability feeds the §2 watchlist factor (set before _watchlist runs).
+        signal["fno_factor"] = 1.0 if fno_flag.get("fno_available") else None
         base = {
             "symbol": symbol,
             "signal": signal,
@@ -297,8 +386,18 @@ class NubraEquityRunner:
             # §13 tracker fields — circuit-band width at entry + size scaling (None outside CALL/no-data).
             "band_pct": signal.get("band_pct"),
             "size_factor": signal.get("size_factor"),
-            # §8 soft conviction flag (advisory, never gates).
-            **self._delivery_flag(symbol),
+            # §8/§3 soft conviction flags (advisory, never gates).
+            **delivery_flag,
+            "fno": fno_flag,
+            "pre_open": self._pre_open_flag(symbol),
+            # §2 watchlist ranking score + factor breakdown.
+            "watchlist": self._watchlist(symbol, nse_result, signal, delivery_flag.get("delivery_pct")),
+            # §5 scale-out targets (advisory) — CALL entries only.
+            "targets": (
+                scale_out_targets(float(ltp), float(signal.get("expected_move_pct", 0) or 0), self._targets_cfg)
+                if self._targets_enabled and str(signal.get("trade", "")).upper() == "CALL"
+                else None
+            ),
         }
 
         if not risk_result["approved"]:
@@ -313,6 +412,8 @@ class NubraEquityRunner:
                 return {**base, "status": "skipped", "skip_reason": "max_trades_per_day"}
             if not dry_run:
                 dispatch_result = self._stack.registry.dispatch("equity", signal, risk_result, symbol)
+                if str(signal.get("trade", "")).upper() == "CALL" and self._entry_ledger is not None:
+                    self._entry_ledger.record_entry(symbol, _ist_today())
             self._trade_count += 1
 
         # §13: exit-fill quality on a close (PUT) — full / partial / no-fill (circuit-locked).
@@ -326,6 +427,11 @@ class NubraEquityRunner:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _ist_today():
+    from datetime import datetime, timedelta, timezone
+    return datetime.now(timezone(timedelta(hours=5, minutes=30))).date()
+
 
 def _chunk(lst: list, size: int):
     for i in range(0, len(lst), size):

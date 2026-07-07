@@ -1,0 +1,18 @@
+{
+  "results": [
+    {
+      "report_date": "20260701",
+      "classification": "Class II",
+      "recalling_firm": "Sun Pharmaceutical Industries Inc",
+      "product_description": "Perampanel CIII Tablets, 6mg, Rx only, 30 Tablets",
+      "reason_for_recall": "Labeling: Label Mix-up: 10mg tablet found in a 6mg bottle"
+    },
+    {
+      "report_date": "20260617",
+      "classification": "Class II",
+      "recalling_firm": "Sun Pharmaceutical Industries Inc",
+      "product_description": "Budesonide Inhalation Suspension, 1mg/2mL",
+      "reason_for_recall": "Presence of Foreign Substance in the suspension"
+    }
+  ]
+}

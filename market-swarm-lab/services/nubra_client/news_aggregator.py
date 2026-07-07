@@ -33,6 +33,9 @@ class AggregatingNewsCollector:
         if config.get("news", {}).get("google", {}).get("enabled"):
             from services.google_news.google_news_collector import GoogleNewsCollector
             sources.append(("google_news", GoogleNewsCollector.from_config(config)))
+        if config.get("news", {}).get("usfda", {}).get("enabled"):
+            from services.usfda.usfda_collector import UsfdaCollector
+            sources.append(("usfda", UsfdaCollector.from_config(config)))
         return cls(sources, get_analyzer(engine, config))
 
     def collect(self, symbol: str) -> dict[str, Any]:

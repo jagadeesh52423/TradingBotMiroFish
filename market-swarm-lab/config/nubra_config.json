@@ -88,6 +88,17 @@
       "enabled": true,
       "fade_tolerance_pct": 0.1
     },
+    "targets": {
+      "enabled": true,
+      "t1_move_frac": 0.6,
+      "t2_move_frac": 1.0,
+      "t1_scale_pct": 70,
+      "t2_scale_pct": 30
+    },
+    "time_stop": {
+      "enabled": true,
+      "max_sessions": 3
+    },
     "sector_gate": {
       "enabled": true,
       "lookback": 20,
@@ -159,6 +170,15 @@
       "max_items": 20,
       "cache_ttl_seconds": 900,
       "query_template": "\"{symbol}\" (stock OR share) when:{lookback}d"
+    },
+    "usfda": {
+      "enabled": true,
+      "limit": 10,
+      "symbol_map": {
+        "SUNPHARMA": "Sun Pharmaceutical",
+        "DRREDDY": "Dr. Reddy's Laboratories",
+        "LUPIN": "Lupin"
+      }
     }
   },
   "delivery": {
@@ -166,6 +186,24 @@
     "conviction_flag": {
       "enabled": true,
       "trailing_days": 20
+    }
+  },
+  "watchlist": {
+    "enabled": true,
+    "weights": {
+      "catalyst": 0.30, "sector": 0.25, "band": 0.15, "liquidity": 0.15, "fno": 0.15
+    }
+  },
+  "fno": {
+    "conviction_flag": {
+      "enabled": true
+    }
+  },
+  "pre_open": {
+    "conviction_flag": {
+      "enabled": true,
+      "big_gap_pct": 1.0,
+      "min_qty": 50000
     }
   },
   "runner": {

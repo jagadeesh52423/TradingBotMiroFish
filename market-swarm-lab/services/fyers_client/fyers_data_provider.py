@@ -200,6 +200,16 @@ class FyersDataProvider(MarketDataProvider):
         ltp = _extract_ltp(response)
         return Decimal(str(ltp))
 
+    def option_summary(self, symbol: str) -> dict | None:
+        """F&O positioning via Fyers option chain: {'call_oi','put_oi','pcr'} or None.
+
+        None for cash-only names (option chain returns no call OI). PCR = put_oi/call_oi —
+        descriptive context only (§8: not a leading signal).
+        """
+        resp = self._get_client().optionchain(
+            {"symbol": self._to_fyers_symbol(symbol), "strikecount": 1, "timestamp": ""})
+        return _extract_option_summary(resp)
+
     def circuit(self, symbol: str) -> dict | None:
         """Circuit-band status via Fyers depth() (quotes() does NOT carry circuit fields).
 
@@ -231,6 +241,15 @@ def _first(v: dict, keys: tuple[str, ...]):
         if v.get(k):
             return v[k]
     return None
+
+
+def _extract_option_summary(response: dict) -> dict | None:
+    d = (response or {}).get("data") or {}
+    call_oi, put_oi = d.get("callOi"), d.get("putOi")
+    if not call_oi:  # cash-only / no F&O data
+        return None
+    pcr = (put_oi / call_oi) if put_oi is not None else None
+    return {"call_oi": call_oi, "put_oi": put_oi, "pcr": round(pcr, 3) if pcr is not None else None}
 
 
 def _extract_circuit(response: dict, symbol: str) -> dict | None:
