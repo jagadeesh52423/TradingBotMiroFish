@@ -36,6 +36,12 @@ class AggregatingNewsCollector:
         if config.get("news", {}).get("usfda", {}).get("enabled"):
             from services.usfda.usfda_collector import UsfdaCollector
             sources.append(("usfda", UsfdaCollector.from_config(config)))
+        if config.get("news", {}).get("insider", {}).get("enabled"):
+            from services.nse_insider.insider_collector import NseInsiderCollector
+            sources.append(("insider", NseInsiderCollector.from_config(config)))
+        if config.get("news", {}).get("pib", {}).get("enabled"):
+            from services.pib.pib_collector import PibCollector
+            sources.append(("pib", PibCollector.from_config(config)))
         return cls(sources, get_analyzer(engine, config))
 
     def collect(self, symbol: str) -> dict[str, Any]:

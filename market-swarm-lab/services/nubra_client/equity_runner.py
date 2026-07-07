@@ -35,6 +35,7 @@ from services.nubra_client.trade_targets import scale_out_targets
 from services.nubra_client.fno_oi import FyersOptionProvider, pcr_label
 from services.nubra_client.time_stop import stale_symbols
 from services.nubra_client.entry_ledger import EntryLedger
+from services.nubra_client.trade_log import TradeLog
 from services.nubra_client.pre_open import PreOpenCollector, pre_open_conviction
 from services.nubra_client.position_sizing import band_pct_from_circuit, band_size_factor
 from services.nubra_client.equity_assembly import build_equity_stack
@@ -127,6 +128,7 @@ class NubraEquityRunner:
         self._time_stop_enabled = bool(ts_cfg.get("enabled"))
         self._max_sessions = int(ts_cfg.get("max_sessions", 3))
         self._entry_ledger = EntryLedger() if self._time_stop_enabled else None
+        self._trade_log = TradeLog() if self._time_stop_enabled else None
         po_cfg = config.get("pre_open", {}).get("conviction_flag", {})
         self._preopen = PreOpenCollector.from_config(config) if po_cfg.get("enabled") else None
         self._preopen_cfg = po_cfg
@@ -257,12 +259,14 @@ class NubraEquityRunner:
         signal["band_pct"] = round(band, 2)
         signal["size_factor"] = band_size_factor(band, self._band_tiers)
 
-    def run_time_stop_exits(self, held_symbols, today=None, *, dry_run: bool = False) -> dict:
+    def run_time_stop_exits(self, held_symbols, today=None, *, dry_run: bool = False, price_fn=None) -> dict:
         """§5 time-stop: close held positions aged >= max_sessions. Circuit-lock aware —
-        a lower-circuit-locked name can't be sold, so it's flagged (skipped_locked), not cleared."""
+        a lower-circuit-locked name can't be sold, so it's flagged (skipped_locked), not cleared.
+        On each close, logs a closed-trade record (§13) with return_pct / band_pct / exit-fill."""
         if self._entry_ledger is None:
             return {"exited": [], "skipped_locked": [], "reason": "disabled"}
         today = today or _ist_today()
+        price_fn = price_fn or getattr(self._nubra_client, "current_price", None)
         held = {str(s).upper() for s in held_symbols}
         stale = stale_symbols(self._entry_ledger.entries(), held, today, self._max_sessions)
         exited, locked = [], []
@@ -272,11 +276,35 @@ class NubraEquityRunner:
                 locked.append(sym)  # unsellable at lower circuit — carry, don't clear
                 continue
             signal = {"trade": "PUT", "ticker": sym, "signal_id": f"timestop-{sym}-{today.isoformat()}"}
+            dispatch_result = None
             if not dry_run:
-                self._stack.registry.dispatch("equity", signal, {"approved": True}, sym)
+                dispatch_result = self._stack.registry.dispatch("equity", signal, {"approved": True}, sym)
+            self._log_closed_trade(sym, today, st, dispatch_result, price_fn)
             self._entry_ledger.clear(sym)
             exited.append(sym)
         return {"exited": exited, "skipped_locked": locked, "as_of": today.isoformat(), "dry_run": dry_run}
+
+    def _log_closed_trade(self, symbol, today, circuit_status, dispatch_result, price_fn) -> None:
+        if self._trade_log is None:
+            return
+        entry_price = self._entry_ledger.entry_price(symbol)
+        exit_ltp = None
+        if price_fn is not None:
+            try:
+                exit_ltp = float(price_fn(symbol))
+            except Exception as exc:  # exit price unavailable — log the trade without return_pct
+                _log.warning("exit price fetch failed for %s: %s", symbol, exc)
+        return_pct = None
+        if entry_price and exit_ltp:
+            return_pct = round((exit_ltp - entry_price) / entry_price * 100, 4)
+        self._trade_log.record({
+            "symbol": symbol, "exit_date": today.isoformat(),
+            "entry_price": entry_price, "exit_price": exit_ltp, "return_pct": return_pct,
+            "band_pct": band_pct_from_circuit(circuit_status) if circuit_status else None,
+            "exit_fill_quality": (_exit_fill_quality(dispatch_result, circuit_status)
+                                  if dispatch_result is not None else None),
+            "exit_reason": "time_stop",
+        })
 
     def _process_symbol(self, symbol: str, *, dry_run: bool) -> dict[str, Any]:
         if self._nubra_client is None:
@@ -390,6 +418,8 @@ class NubraEquityRunner:
             **delivery_flag,
             "fno": fno_flag,
             "pre_open": self._pre_open_flag(symbol),
+            # §7 catalyst stacking — distinct sources firing for this symbol.
+            "catalyst_stack": _catalyst_stack(nse_result),
             # §2 watchlist ranking score + factor breakdown.
             "watchlist": self._watchlist(symbol, nse_result, signal, delivery_flag.get("delivery_pct")),
             # §5 scale-out targets (advisory) — CALL entries only.
@@ -413,7 +443,7 @@ class NubraEquityRunner:
             if not dry_run:
                 dispatch_result = self._stack.registry.dispatch("equity", signal, risk_result, symbol)
                 if str(signal.get("trade", "")).upper() == "CALL" and self._entry_ledger is not None:
-                    self._entry_ledger.record_entry(symbol, _ist_today())
+                    self._entry_ledger.record_entry(symbol, _ist_today(), price=float(ltp))
             self._trade_count += 1
 
         # §13: exit-fill quality on a close (PUT) — full / partial / no-fill (circuit-locked).
@@ -436,6 +466,14 @@ def _ist_today():
 def _chunk(lst: list, size: int):
     for i in range(0, len(lst), size):
         yield lst[i : i + size]
+
+
+def _catalyst_stack(nse_result: dict) -> dict:
+    """§7: how many distinct news sources are firing for this symbol. >=2 = stacked
+    (multiple simultaneous confirmations raise conviction). Descriptive, never gates."""
+    audit = nse_result.get("source_audit", {})
+    firing = sorted(k for k, v in audit.items() if isinstance(v, dict) and v.get("count", 0) > 0)
+    return {"catalyst_stack_count": len(firing), "catalyst_sources": firing, "stacked": len(firing) >= 2}
 
 
 def _delivery_conviction(deliv: float | None, avg: float | None) -> str | None:

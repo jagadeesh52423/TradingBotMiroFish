@@ -179,6 +179,19 @@
         "DRREDDY": "Dr. Reddy's Laboratories",
         "LUPIN": "Lupin"
       }
+    },
+    "insider": {
+      "enabled": true,
+      "max_items": 15
+    },
+    "pib": {
+      "enabled": true,
+      "symbol_map": {
+        "BEL": ["bharat electronics"],
+        "HAL": ["hindustan aeronautics"],
+        "BPCL": ["bharat petroleum"],
+        "ONGC": ["oil and natural gas"]
+      }
     }
   },
   "delivery": {

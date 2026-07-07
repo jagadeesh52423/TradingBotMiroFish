@@ -64,6 +64,7 @@ def _runner(tmp_path, circuit_provider=None):
     }
     r = NubraEquityRunner(cfg, nubra_client=object(), equity_stack=_FakeStack())
     r._entry_ledger = EntryLedger(str(tmp_path / "led.json"))
+    r._trade_log = None  # isolate: don't write to repo state during this test
     r._circuit_provider = circuit_provider
     return r
 

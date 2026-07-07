@@ -18,8 +18,8 @@ class EntryLedger:
         if self.path.exists():
             self._data = json.loads(self.path.read_text(encoding="utf-8"))
 
-    def record_entry(self, symbol: str, on: date) -> None:
-        self._data[symbol.upper()] = on.isoformat()
+    def record_entry(self, symbol: str, on: date, price: float | None = None) -> None:
+        self._data[symbol.upper()] = {"date": on.isoformat(), "price": price}
         self._save()
 
     def clear(self, symbol: str) -> None:
@@ -27,8 +27,17 @@ class EntryLedger:
             self._save()
 
     def entries(self) -> dict[str, date]:
-        return {s: date.fromisoformat(d) for s, d in self._data.items()}
+        return {s: date.fromisoformat(_date_str(v)) for s, v in self._data.items()}
+
+    def entry_price(self, symbol: str) -> float | None:
+        v = self._data.get(symbol.upper())
+        return v.get("price") if isinstance(v, dict) else None
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(self._data), encoding="utf-8")
+
+
+def _date_str(v) -> str:
+    # back-compat: old ledgers stored a bare ISO date string, new ones a {date, price} dict.
+    return v["date"] if isinstance(v, dict) else v
