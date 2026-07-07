@@ -38,6 +38,7 @@ def _ensure_providers_loaded() -> None:
     # register_provider from this module).
     import services.nubra_client.nubra_client  # noqa: F401 — triggers @register_provider("nubra")
     import services.fyers_client.fyers_data_provider  # noqa: F401 — triggers @register_provider("fyers")
+    import services.nubra_client.nubra_futures_provider  # noqa: F401 — triggers @register_provider("nubra_futures")
     _bootstrapped = True
 
 

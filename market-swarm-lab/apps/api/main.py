@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from fastapi import FastAPI, Query
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .db import init_infra
@@ -27,6 +31,22 @@ app = FastAPI(title="market-swarm-lab", version="0.1.0")
 @app.on_event("startup")
 def startup() -> None:
     init_infra()
+    if os.environ.get("NUBRA_LIVE") == "1":
+        from .nubra_live import start as _start_nubra
+        interval = int(os.environ.get("NUBRA_LIVE_INTERVAL", "900"))
+        _start_nubra(app, interval=interval)
+
+
+@app.get("/nubra/live")
+def nubra_live_snapshot() -> JSONResponse:
+    from .nubra_live import get_snapshot
+    return JSONResponse(get_snapshot())
+
+
+@app.get("/nubra/dashboard")
+def nubra_dashboard() -> FileResponse:
+    html = Path(__file__).parent / "static" / "nubra_dashboard.html"
+    return FileResponse(html, media_type="text/html")
 
 
 @app.get("/health")
