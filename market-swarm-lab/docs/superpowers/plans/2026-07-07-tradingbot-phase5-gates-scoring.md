@@ -15,6 +15,9 @@
 - PORT rule as prior phases: copy SRC logic, apply only listed transformations; formulas/thresholds are reviewed — do not re-derive.
 - After Task 1, **Group A (Tasks 2–3, gates/), Group B (Task 4, scoring/), Group C (Task 5, providers/marketwide.py + fixture)** touch disjoint files and may run as parallel coder streams (same parallel-safety rules as Phase 3: explicit-path `git add`, index.lock retry, own-test-paths only until the final task).
 - **Behavioral invariants that MUST survive (named tests):** circuit blocks at `last ≥ upper·(1−buffer/100)` with fail-open on unknown (unless `block_on_unknown`); sector/regime trend = last close vs N-day SMA requiring a FULL `ma_days` window; first-15 needs BOTH price-hold and volume-above-normal; scorer renormalizes over present factors (missing ≠ penalty) and the catalyst factor is **directional** (bearish → 0); band factor uses `band_pct` off prev-close base (already guaranteed by `Circuit.band_pct`).
+- **Deliberate changes vs SRC (exactly two — anything else unlisted is a port bug):**
+  1. liquidity factor = turnover-based (replaces SRC delivery-%), as described in Task 4;
+  2. **sector trend now requires a FULL `ma_days` window** (unified with the SRC *regime* fix): SRC `SectorTrendProvider.trend` averaged a partial window once past `min_bars` (10) — 10–19 bars yielded up/down; here 10–19 closes return None (gate passes, fail-open). Consequently SRC's `sector_gate.min_bars` has no consumer and is deliberately NOT carried into settings.
 - Full suite + ruff green at end; commit per task.
 
 ---
@@ -39,7 +42,7 @@ src/tradingbot/
 │   ├── watchlist.py            # WatchlistScorer (5-factor, renormalizing)
 │   └── flags.py                # pcr_label, oi_buildup_label, catalyst_stack (pure)
 └── providers/marketwide.py     # MarketContextBuilder + trend_from_closes (pure)
-data/sector_constituents.json   # bundled snapshot (copied from SRC)
+data/fixtures/sector_constituents.json   # bundled snapshot (copied from SRC)
 tests/gates/  tests/scoring/  tests/providers/test_marketwide.py
 ```
 
@@ -73,12 +76,12 @@ class MarketContext:
 
 - Settings (all with the shown defaults; `extra="ignore"`):
   - `CircuitGateSettings(enabled: bool = True, upper_band_buffer_pct: float = 0.5, block_on_unknown: bool = False)`
-  - `SectorSettings(enabled: bool = True, ma_days: int = 20, min_bars: int = 10)`
+  - `SectorSettings(enabled: bool = True, ma_days: int = 20)`  # no min_bars — full-window rule (deliberate change 2) leaves it with no consumer
   - `RegimeSettings(enabled: bool = True, index: str = "NSE:NIFTY50-INDEX", ma_days: int = 20)`
   - `First15Settings(enabled: bool = False, fade_tolerance_pct: float = 0.1, vol_factor: float = 0.8)`  # disabled by default — entry-timing gate, not a screening gate (matches current config)
   - `ScoringSettings(weights: dict[str, float] = {"catalyst": .30, "sector": .25, "band": .15, "liquidity": .15, "fno": .15}, liquidity_full_cr: float = 100.0)`
   - `Settings` gains: `gates_circuit`, `gates_sector`, `gates_regime`, `gates_first15`, `scoring` (all default instances).
-  - `load_config` maps old nubra keys: `entry_threshold.circuit_gate.{enabled,upper_band_buffer_pct,block_on_unknown}`, `entry_threshold.sector_gate.{enabled,lookback→ma_days,min_bars}`, `entry_threshold.regime_gate.{enabled,index,ma_days}`, `entry_threshold.first15_gate.{enabled,fade_tolerance_pct,vol_factor}`, `watchlist.weights → scoring.weights`.
+  - `load_config` maps old nubra keys: `entry_threshold.circuit_gate.{enabled,upper_band_buffer_pct,block_on_unknown}`, `entry_threshold.sector_gate.{enabled,lookback→ma_days}` (min_bars intentionally unmapped — see deliberate change 2), `entry_threshold.regime_gate.{enabled,index,ma_days}`, `entry_threshold.first15_gate.{enabled,fade_tolerance_pct,vol_factor}`, `watchlist.weights → scoring.weights`.
 
 - [ ] **Step 1: Append failing tests** (MarketContext helpers; MarketData default; a `load_config` mapping case using an `entry_threshold` dict → assert `gates_circuit.upper_band_buffer_pct` etc.). Full test code:
 
@@ -150,11 +153,11 @@ class CompositeGate(EntryGate):
     def evaluate(self, candidate, market, ctx) -> GateResult:  # first block wins; all pass → passed
 ```
 
-- `CircuitGate(settings: CircuitGateSettings)` — PURE port of the SRC threshold: uses `market.circuit`; unknown circuit → pass (fail-open) unless `block_on_unknown` → `GateResult(False, DropReason.CIRCUIT_LOCKED, "circuit status unknown")`; blocks when `last ≥ upper·(1−buffer_pct/100)` → reason `CIRCUIT_LOCKED`. **No trade-type guard** (candidacy: every candidate is buy-intent).
+- `CircuitGate(settings: CircuitGateSettings)` — PURE port of the SRC threshold: uses `market.circuit`; unknown circuit → pass (fail-open) unless `block_on_unknown` → `GateResult(False, DropReason.CIRCUIT_LOCKED, "circuit status unknown")`; blocks when `last ≥ upper·(1−buffer_pct/100)` → reason `CIRCUIT_LOCKED`. **Decimal cast required:** foundation `Circuit.last`/`.upper` are `Decimal` (SRC used floats) — compare as `float(circuit.last) >= float(circuit.upper) * (1 - buffer_pct/100.0)`; `Decimal * float` raises TypeError (same `float()` pattern as `Circuit.band_pct`). **No trade-type guard** (candidacy: every candidate is buy-intent).
 - `SectorGate(settings)` — `ctx.sector_trend_for(symbol) == "down"` → `SECTOR_DOWN`; unmapped/None → pass.
 - `RegimeGate(settings)` — `ctx.regime == "down"` → `REGIME_DOWN`; None → pass.
 
-- [ ] **Step 1: Write failing tests** — port the SRC gate cases onto the pure API (build `Candidate`/`MarketData`/`MarketContext` fixtures instead of fake providers). Must include: block-at-upper-with-buffer boundary (`last == threshold` blocks), fail-open on missing circuit, block_on_unknown, sector down blocks / unmapped passes / up passes, regime down blocks / None passes, CompositeGate first-block-wins ordering + all-pass.
+- [ ] **Step 1: Write failing tests** — port the SRC gate cases onto the pure API (build `Candidate`/`MarketData`/`MarketContext` fixtures instead of fake providers). Must include: block-at-upper-with-buffer boundary (`last == threshold` blocks), fail-open on missing circuit, block_on_unknown, sector down blocks / unmapped passes / up passes, regime down blocks / None passes, CompositeGate first-block-wins ordering + all-pass. (The per-gate SRC `test_gate_ignores_put` cases are intentionally NOT ported — there are no trade-type guards under candidacy semantics.)
 - [ ] **Step 2: FAIL → Step 3: implement (thresholds verbatim from SRC) → Step 4: green (tests/gates/ only — parallel window). Step 5: Commit** — `feat(gates): pure Circuit/Sector/Regime gates + Composite (port)`
 
 ## Task 3: `gates/first_fifteen.py` (PORT of the logic, pure)
@@ -168,7 +171,7 @@ class CompositeGate(EntryGate):
 - `def gap_status(bars: list[Bar], now_ist: datetime, fade_tolerance_pct: float, vol_factor: float) -> str | None` — pure port: returns `"held" | "faded" | "weak_volume" | None`; window 09:15–09:30 IST; before 09:30 or no today-bars → None; price-hold check then volume-vs-prior-sessions-average check (both halves, verbatim thresholds). Bars come from `market.intraday_bars` (`Bar.timestamp_ms`).
 - `FirstFifteenGate(settings: First15Settings, clock: Callable[[], datetime] | None = None)` — evaluates via `gap_status`; `"faded"` → `GateResult(False, DropReason.GAP_FADED, ...)`; `"weak_volume"` → `WEAK_VOLUME`; None/`"held"` → pass; `market.intraday_bars is None` → pass (fail-open — pipeline didn't fetch intraday).
 
-- [ ] **Step 1: Write failing tests** — port the 12 SRC cases (held/faded/weak-volume/none-before-window/none-no-today-bars/held-when-volume-normal + gate pass/block mappings), building `Bar` lists with the SRC helper pattern (IST timestamps).
+- [ ] **Step 1: Write failing tests** — port the ~11 non-trade-type SRC cases (held/faded/weak-volume/none-before-window/none-no-today-bars/held-when-volume-normal + gate pass/block mappings; SRC's `test_gate_ignores_put` is intentionally dropped under candidacy semantics), building `Bar` lists with the SRC helper pattern (IST timestamps).
 - [ ] **Step 2: FAIL → Step 3: implement → Step 4: green. Step 5: Commit** — `feat(gates): first-fifteen gap+volume gate (pure port, disabled by default)`
 
 ---
@@ -197,6 +200,11 @@ class Scorer(Protocol):
               flags: ConvictionFlags, ctx: MarketContext) -> ScoredResult: ...
 ```
 
+  (Spec-§3 delta, deliberate: the spec sketched `score(c, m, f, flags)`; `ctx` is added because
+  the sector and liquidity factors read `ctx.sector_trend_for`/`ctx.turnover_for` — same
+  refinement the spec's own EntryGate already carries. `forecast` is accepted for the Protocol's
+  generality but UNUSED by WatchlistScorer's five factors — don't expect forecast-driven scoring.)
+
 - `WatchlistScorer(settings: ScoringSettings)` — the 5 factors, then the SRC renormalizing blend (PORT `watchlist_score` verbatim):
   - `catalyst` = `max(0, min(1, flags.sentiment))` if sentiment is not None (directional — bearish→0)
   - `band` = `min(1, market.circuit.band_pct / 20)` when available (band off base — guaranteed by `Circuit.band_pct`)
@@ -219,7 +227,7 @@ class Scorer(Protocol):
 
 ```bash
 cp /Users/jagadeeshpulamarasetti/Code/own/TradingBotMiroFish/market-swarm-lab/services/nubra_client/fixtures/sector_constituents.json \
-   /Users/jagadeeshpulamarasetti/Code/own/TradingBot/data/sector_constituents.json
+   /Users/jagadeeshpulamarasetti/Code/own/TradingBot/data/fixtures/sector_constituents.json
 ```
 
 - Test: `tests/providers/test_marketwide.py`
@@ -233,7 +241,7 @@ def trend_from_closes(closes: list[float], ma_days: int) -> str | None:
     regime fix: never average a partial window)."""
 
 def load_sector_map(path: Path | None = None) -> dict[str, str]:
-    """{SYMBOL: index_symbol} from data/sector_constituents.json; {} + warning if missing."""
+    """{SYMBOL: index_symbol} from data/fixtures/sector_constituents.json; {} + warning if missing."""
 
 class MarketContextBuilder:
     def __init__(self, market: MarketDataProvider, sector_settings: SectorSettings,
