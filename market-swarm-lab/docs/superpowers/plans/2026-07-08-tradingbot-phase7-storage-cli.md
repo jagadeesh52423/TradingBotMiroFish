@@ -12,7 +12,7 @@
 
 - Work ONLY inside `/Users/jagadeeshpulamarasetti/Code/own/TradingBot`. Port source (**SRC**, read-only): `/Users/jagadeeshpulamarasetti/Code/own/TradingBotMiroFish/market-swarm-lab` (`services/watchlist_store/run_to_doc.py`, `services/watchlist_store/mongo_store.py`, `services/nubra_client/trade_targets.py`, `scripts/weekly_watchlist.py` `_save_run`).
 - Prerequisite: Phase 6 merged (HEAD `be7cb87`, 299 passed / 1 skipped). Consume committed interfaces exactly: `RunResult(run_date, universe_size, probables, errors)` with `.elected`/`.counts`; `Probable(symbol, status, drop_reason, score, forecast, market, catalyst, flags)`; `Forecast(predicted_return, direction, confidence, quantiles)`; `MarketData(ltp, closes, history_ok, circuit, options, intraday_bars)`; `Circuit.band_pct`; `OptionSnapshot.pcr`; `ConvictionFlags(sentiment, catalyst_stack, has_deal, promoter_trend, oi_buildup)`; `Screener.from_settings(settings)` / `async run(today=None) -> RunResult`; `load_config(dict) -> Settings`; `label_from_score` in `providers/news/sentiment.py`.
-- **DOC-SHAPE COMPATIBILITY IS THE CONTRACT:** the emitted run document must be readable by the existing MiroFish dashboard/backtest — same top-level keys (`run_id`, `run_date`, `generated_at`, `universe`, `sentiment_engine`, `counts{total,elected,dropped}`, `symbols[]`) and same per-symbol row keys (`symbol`, `status` ("elected"/"dropped"), `reason` (None when elected), `trade` (CALL/PUT/HOLD — derived from TimesFM direction; presentation renames it later), `score`, `upside_pct`, `band_pct`, `size_factor`, `pcr`, `sentiment` (label string), `catalyst_stack` (int), `factors`, `targets` ({t1,t2,...}|None), `entry_ltp`, `catalyst` (description), `catalyst_type`). Where the new pipeline has no value (e.g. `size_factor` — sizing not ported), emit `None`, never omit the key.
+- **DOC-SHAPE COMPATIBILITY IS THE CONTRACT:** the emitted run document must be readable by the existing MiroFish dashboard/backtest — same top-level keys (`run_id`, `run_date`, `generated_at`, `universe`, `sentiment_engine`, `counts{total,elected,dropped}`, `symbols[]`) and same per-symbol row keys (`symbol`, `status` ("elected"/"dropped"), `reason` (None when elected), `trade` (CALL/PUT/HOLD — derived from TimesFM direction; presentation renames it later), `score`, `upside_pct`, `band_pct`, `size_factor`, `pcr`, `sentiment` (label string), `catalyst_stack` (int), `factors`, `targets` ({t1,t2,...}|None), `entry_ltp`, `catalyst` (description), `catalyst_type`). Where the new pipeline has no value (e.g. `size_factor` — sizing not ported), emit `None`, never omit the key. **`trade` values are intentionally re-derived** from TimesFM direction (BULLISH/BEARISH/NEUTRAL → CALL/PUT/HOLD): SRC candidacy mode hard-coded CALL for every candidate (+ an F2 CALL→HOLD news downgrade), so new docs will emit PUT/HOLD where old docs said CALL — deliberate, matching the dashboard's "TimesFM view" rename. Parity is claimed on shape/keys/counts/ordering, NOT on `trade` values.
 - **Parity reconciliations (from the Phase-6 review, now decided):** (a) errored symbols ARE re-folded into `symbols[]` as dropped rows with `reason="error"` and counted in `counts.total/dropped` — matching SRC `run_to_doc` exactly; (b) the SRC ordering quirk `-(score or -1)` (a 0.0 score sorts with the Nones) IS replicated in the doc's `symbols` ordering — byte-level parity for the Phase-8 diff beats elegance; keep `RunResult`'s own cleaner ordering untouched (the quirk lives only in the mapper).
 - Money → `str(Decimal)`/float per SRC doc shape (`entry_ltp` was a float in SRC docs — emit `float(market.ltp)`).
 - Full suite + ruff green at end; commit per task; parallel-safety rules as prior phases.
@@ -49,19 +49,19 @@ tests/scoring/test_targets.py  tests/storage/  tests/cli/test_screen.py
 
 ```python
 def scale_out_targets(ltp: float, expected_move_pct: float,
-                      t1_fraction: float = 0.6, t1_exit_pct: int = 70) -> dict | None:
-    """T1 at t1_fraction of the expected move (scale out t1_exit_pct%), T2 at the full move.
-    None for a non-positive expected move (no bullish target on a flat/bearish forecast)."""
+                      t1_fraction: float = 0.6, t1_scale_pct: int = 70) -> dict | None:
+    """T1 at t1_fraction of the expected move (scale out t1_scale_pct%), T2 at the full move
+    (remaining 100-t1_scale_pct%). None for a non-positive expected move."""
 ```
 
-  Return dict keys exactly as SRC (`{"t1": ..., "t2": ..., "t1_exit_pct": ..., "t2_exit_pct": ...}` — copy the SRC rounding). Read SRC first; keep formulas verbatim.
+  Return dict keys VERBATIM as SRC trade_targets.py: `{"t1": round(...,2), "t1_scale_pct": 70, "t2": round(...,2), "t2_scale_pct": 30}` — SRC's own test asserts exactly `{"t1":103.0,"t1_scale_pct":70,"t2":105.0,"t2_scale_pct":30}`. The `targets` sub-dict is part of the doc-shape compat contract, so these key names are load-bearing. Read SRC first; keep formulas/rounding verbatim (only the cfg-dict → kwargs transform is allowed).
 
 - [ ] **Step 1: Write failing tests** — port the SRC `test_trade_targets.py` cases (positive move → T1/T2 levels + fractions; zero/negative move → None; rounding).
 - [ ] **Step 2: FAIL → Step 3: implement → Step 4: PASS (tests/scoring/test_targets.py only) → Step 5: Commit** — `feat(scoring): scale-out targets port (pure)`
 
 ---
 
-## Task 2: `storage/doc.py` — the RunResult → run-document mapper (Group B)
+## Task 2: `storage/doc.py` — the RunResult → run-document mapper (AFTER Task 1 — hard dependency: doc.py imports scale_out_targets from Task 1's scoring/targets.py; do NOT dispatch in parallel with Task 1)
 
 **Files:**
 - Create: `src/tradingbot/storage/__init__.py`, `src/tradingbot/storage/doc.py`
@@ -79,12 +79,12 @@ def run_to_doc(result: RunResult, *, generated_at: datetime, universe: str = "ca
 2. Per-Probable row (all keys ALWAYS present):
    - `symbol`; `status` = `"elected"`/`"dropped"` (enum `.value`); `reason` = `drop_reason.value` or None.
    - `trade`: from `forecast.direction` — BULLISH→"CALL", BEARISH→"PUT", NEUTRAL→"HOLD"; None when `forecast is None` (SRC rows had `trade` from the signal; forecast-less rows carry None).
-   - `score`; `upside_pct` = `round(forecast.predicted_return * 100, 2)` or None; `band_pct` = `market.circuit.band_pct` (rounded 2) or None; `size_factor` = None (sizing not ported — key kept for shape compat); `pcr` = `market.options.pcr` or None.
+   - `score`; `upside_pct` = `round(forecast.predicted_return * 100, 2) if forecast is not None else None` (NEVER the `x or None` idiom — a legitimate 0.0 must survive); `band_pct` = `round(market.circuit.band_pct, 2) if market.circuit is not None and market.circuit.band_pct is not None else None` (circuit is Optional — guard, don't attribute-chase); `size_factor` = None (sizing not ported — key kept for shape compat); `pcr` = `market.options.pcr if market.options is not None else None`.
    - `sentiment` = `label_from_score(flags.sentiment)` when `flags.sentiment is not None` else None (import from `providers/news/sentiment.py`); `catalyst_stack` = `flags.catalyst_stack`.
    - `factors` = the ScoredResult factors are NOT carried on Probable → emit None (shape-compat key; note in docstring).
    - `targets` = `scale_out_targets(float(market.ltp), forecast.predicted_return)` when forecast present else None (Task 1 import).
    - `entry_ltp` = `float(market.ltp)`; `catalyst` = `probable.catalyst.description`; `catalyst_type` = `probable.catalyst.type.value`.
-3. **Errors re-fold (parity decision a):** for each `(sym, err)` in `result.errors`, append a row `{"symbol": sym, "status": "dropped", "reason": "error", ...all other keys None...}`; `counts = {"total": len(rows), "elected": ..., "dropped": ...}` computed AFTER the fold (matches SRC totals).
+3. **Errors re-fold (parity decision a):** for each `(sym, err)` in `result.errors.items()`, append a row `{"symbol": sym, "status": "dropped", "reason": "error", ...all other keys None...}`; `counts` computed AFTER the fold (matches SRC totals). Acknowledged divergence: SRC attached `catalyst`/`catalyst_type` to error rows via its catalyst_map, but `RunResult.errors` is only `dict[symbol, message]` (no catalyst source reaches the mapper) — error rows here carry None for both. Intended and unavoidable at this layer; parity holds on keys/counts/ordering, not those two values.
 4. **Ordering (parity decision b):** rows sorted by `(status != "elected", -(score or -1))` — the SRC key verbatim, including the 0.0-as-None quirk.
 
 - [ ] **Step 1: Write failing tests** — build Probables via the committed `_make_probable` pattern: full elected row maps every key with exact values (incl. trade CALL from BULLISH, sentiment label, targets dict); dropped row carries reason + score; forecast-less row → trade/upside/targets None; error fold appends reason="error" rows and inflates counts; ordering test proving BOTH elected-first AND the 0.0-score-sorts-with-None quirk (elected rows scored [0.5, 0.0, None, 0.7] order as 0.7, 0.5, then 0.0/None group in stable order); every row has the full key set (assert `set(row) == EXPECTED_KEYS`).
@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> int: ...   # loads .env (python-doten
 ```
 
 **Semantics:**
-1. `main`: `load_dotenv()` (repo-root .env if present — `config/paths.py` root); parse args; `settings = load_config(json.loads(Path(args.config).read_text()))` if `--config` else `Settings()`; `return asyncio.run(run_screen(...)) and 0`.
+1. `main`: `load_dotenv()` bare (python-dotenv's find_dotenv walks up from cwd — same pattern the committed sentiment module uses; `config/paths.py` has NO public root() helper, do not invent one); parse args; `settings = load_config(json.loads(Path(args.config).read_text()))` if `--config` else `Settings()`; `return asyncio.run(run_screen(...)) and 0`.
 2. `run_screen`: `screener = Screener.from_settings(settings)`; `result = await screener.run(today)`; `doc = run_to_doc(result, generated_at=datetime.now(IST), universe="catalyst", sentiment_engine=settings.sentiment.engine)` (IST = fixed +05:30, module const); if `save`: `store = MongoRunStore(uri=mongo_uri); store.save_run(doc); store.close()`; print: `--json` → `json.dumps(doc, default=str)`; else a compact table of the top-N elected rows (`symbol, score, upside_pct, band_pct, sentiment, catalyst_type`) + the counts line + errors count. Returns the doc (testability).
 3. NO business logic in the CLI — everything through the committed facades.
 
