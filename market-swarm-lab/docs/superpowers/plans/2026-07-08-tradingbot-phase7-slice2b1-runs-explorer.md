@@ -12,9 +12,9 @@
 
 - Work ONLY inside `/Users/jagadeeshpulamarasetti/Code/own/TradingBot`. Dashboard spec (read-only): `/Users/jagadeeshpulamarasetti/Code/own/TradingBotMiroFish/market-swarm-lab/docs/superpowers/specs/2026-07-07-tradingbot-dashboard-design.md` §1.1/§4; SRC visual reference: `apps/watchlist/static/dashboard.html` (single-file predecessor — the look to match/beat, not code to port).
 - Prerequisite: slice 2a merged (HEAD `dbdb11a`; API payload shapes are the committed contract — run headers from `/api/runs`, full doc from `/api/runs/{id}` with `symbols[]` rows keyed `symbol/status/reason/trade/score/upside_pct/band_pct/size_factor/pcr/sentiment/catalyst_stack/factors/targets/entry_ltp/catalyst/catalyst_type`, diff from `/api/runs/{id}/diff` = `{run_id, prev_run_id, first_run, entered[], exited[], movers[]}`).
-- **Self-contained bundle:** no external network at runtime (no CDN fonts/scripts). `vite build` output is committed? NO — build artifacts are NOT committed; `api/static/` gets `.gitignore`d built assets EXCEPT a committed fallback `index.html` placeholder is REPLACED at build time. Decision: commit the BUILT bundle (it's how one-process serving works without Node in prod) — `api/static/` contents ARE committed each build (small, ~200KB). Note this in the repo README section of Task 1.
+- **Self-contained bundle:** no external network at runtime (no CDN fonts/scripts). **Decision (single, final): the BUILT bundle under `src/tradingbot/api/static/` IS committed on every build** (small, ~200KB) — one-process serving without Node in prod. Nothing is gitignored (`api/static` is not in .gitignore; plain `git add` works), and hatchling's `packages=["src/tradingbot"]` ships the static assets in the wheel automatically. Note the rebuild command in the repo README (Task 1).
 - **Rename rule (spec):** the stored `trade` field renders as **"TimesFM view"** — CALL→"bullish", PUT→"bearish", HOLD→"neutral", null→"—". Never render the word CALL/PUT as a trade instruction.
-- **Named deferrals (2b-ii / later slices):** column picker + drag-reorder/resize + density toggle + CSV export + saved views (localStorage or `/api/views`) → 2b-ii; numeric-range & enum filters beyond status/search → 2b-ii; position badges → 7b; symbol drawer → 7c; `before=` pagination → with 2b-ii if needed.
+- **Named deferrals (2b-ii / later slices):** column picker + drag-reorder/resize + density toggle + CSV export + saved views (localStorage or `/api/views`) → 2b-ii; numeric-range & enum filters beyond status/search → 2b-ii; **router + deep links `/runs/:runId`, the date picker, and on-screen prev/next buttons (spec §1.1 run-nav items — 2b-i covers navigation via chips + ←/→ + Latest pin only)** → 2b-ii; position badges → 7b; symbol drawer → 7c; `before=` pagination → with 2b-ii if needed.
 - UI tests run headless (`npm test` = vitest run, jsdom); the Python suite must stay green (`uv run --extra dev pytest -q`) — the only Python-side change is the static dir content + a README note.
 - Commit per task. JS work happens under `ui/` only (+ built output under `src/tradingbot/api/static/`).
 
@@ -31,11 +31,13 @@ ui/
 │   ├── api/hooks.ts                           # useRuns/useRun/useLatestRun/useDiff (react-query)
 │   ├── api/types.ts                           # RunHeader, RunDoc, SymbolRow, DiffResult
 │   ├── features/runs/RunTimeline.tsx          # chips, ←/→ keys, Latest pin
-│   ├── features/runs/RunGrid.tsx              # TanStack table: columns, multi-sort, filters
+│   ├── features/runs/RunGrid.tsx              # TanStack table: columns, multi-sort (render-only; pre-filtered rows)
+│   ├── features/runs/filterRows.ts            # PURE filter: (rows, status, reason, search) -> rows
 │   ├── features/runs/DiffBanner.tsx           # entered/exited/movers, collapsible
 │   ├── features/runs/StatusChips.tsx          # elected/dropped/all + drop-reason facet
 │   └── components/format.ts                   # fmtNum, fmtPct, timesFmView(trade)
-│   └── __tests__/ (format.test.ts, hooks.test.tsx, RunGrid.test.tsx, RunTimeline.test.tsx, DiffBanner.test.tsx)
+│   └── __tests__/ setup.ts (jest-dom import) + format.test.ts, hooks.test.tsx, filterRows.test.ts,
+│                  RunGrid.test.tsx, RunTimeline.test.tsx, DiffBanner.test.tsx
 src/tradingbot/api/static/                     # vite build output (committed)
 ```
 
@@ -44,7 +46,7 @@ src/tradingbot/api/static/                     # vite build output (committed)
 ## Task 1: UI scaffold + typed API layer
 
 **Files:**
-- Create: `ui/package.json`, `ui/vite.config.ts`, `ui/tsconfig.json`, `ui/index.html`, `ui/src/main.tsx`, `ui/src/App.tsx` (placeholder shell), `ui/src/styles.css` (theme tokens: dark default + light), `ui/src/api/types.ts`, `ui/src/api/client.ts`, `ui/src/api/hooks.ts`, `ui/src/components/format.ts`, tests `ui/src/__tests__/format.test.ts`, `ui/src/__tests__/hooks.test.tsx`
+- Create: `ui/package.json`, `ui/vite.config.ts`, `ui/tsconfig.json`, `ui/index.html`, `ui/src/main.tsx`, `ui/src/App.tsx` (placeholder shell), `ui/src/styles.css` (theme tokens: dark default + light), `ui/src/api/types.ts`, `ui/src/api/client.ts`, `ui/src/api/hooks.ts`, `ui/src/components/format.ts`, `ui/src/__tests__/setup.ts`, tests `ui/src/__tests__/format.test.ts`, `ui/src/__tests__/hooks.test.tsx`
 
 **Interfaces:**
 
@@ -61,12 +63,15 @@ src/tradingbot/api/static/                     # vite build output (committed)
 
 ```ts
 // vite.config.ts — build into the FastAPI static dir; /api proxied in dev
+import { defineConfig } from "vitest/config";   // NOT from "vite" — the `test` key is typed only by vitest/config
+import react from "@vitejs/plugin-react";
 export default defineConfig({
   plugins: [react()],
   build: { outDir: "../src/tradingbot/api/static", emptyOutDir: true },
   server: { proxy: { "/api": "http://127.0.0.1:8100" } },
   test: { environment: "jsdom", setupFiles: "./src/__tests__/setup.ts", globals: true },
 });
+// tsconfig: keep vite.config.ts OUT of the app include set (or add a "vitest/config" types ref) so tsc -b stays clean.
 ```
 
 ```ts
@@ -77,7 +82,7 @@ export interface RunHeader { run_id: string; run_date: string; generated_at: str
 export interface SymbolRow { symbol: string; status: "elected" | "dropped"; reason: string | null;
   trade: "CALL" | "PUT" | "HOLD" | null; score: number | null; upside_pct: number | null;
   band_pct: number | null; size_factor: number | null; pcr: number | null; sentiment: string | null;
-  catalyst_stack: number; factors: unknown; targets: { t1: number; t1_scale_pct: number; t2: number; t2_scale_pct: number } | null;
+  catalyst_stack: number | null;   // null on error-fold rows (dict.fromkeys) — cells must handle it factors: null;   // storage/doc.py always emits None today — retype when factors are ever carried targets: { t1: number; t1_scale_pct: number; t2: number; t2_scale_pct: number } | null;
   entry_ltp: number | null; catalyst: string | null; catalyst_type: string | null; }
 export interface RunDoc extends RunHeader { symbols: SymbolRow[]; }
 export interface Mover { symbol: string; score: number; prev_score: number; delta: number; }
@@ -100,14 +105,15 @@ export const fetchDiff = (id: string) => fetch(`/api/runs/${encodeURIComponent(i
 // components/format.ts
 export const timesFmView = (t: SymbolRow["trade"]): "bullish" | "bearish" | "neutral" | "—" =>
   t === "CALL" ? "bullish" : t === "PUT" ? "bearish" : t === "HOLD" ? "neutral" : "—";
-export const fmtNum = (v: number | null | undefined, dp = 3): string => v == null ? "–" : v.toFixed(dp);
-export const fmtPct = (v: number | null | undefined, dp = 1): string => v == null ? "–" : `${v > 0 ? "+" : ""}${v.toFixed(dp)}%`;
+export const EMPTY = "—";   // ONE empty-value glyph everywhere (em-dash), matching timesFmView
+export const fmtNum = (v: number | null | undefined, dp = 3): string => v == null ? EMPTY : v.toFixed(dp);
+export const fmtPct = (v: number | null | undefined, dp = 1): string => v == null ? EMPTY : `${v > 0 ? "+" : ""}${v.toFixed(dp)}%`;
 ```
 
 - [ ] **Step 1: Scaffold** — in `/Users/jagadeeshpulamarasetti/Code/own/TradingBot`: `mkdir ui && cd ui`, write the files above (package.json first), `npm install`. (No `npm create vite` — the files are fully specified.)
 - [ ] **Step 2: Write failing tests** — `format.test.ts` (timesFmView all 4 branches; fmtNum/fmtPct null + sign behavior) and `hooks.test.tsx` (stub `global.fetch`; useRuns returns parsed headers; a 404 from latest surfaces the error state; assert `/api/runs?limit=90` URL). `setup.ts` imports `@testing-library/jest-dom`.
 - [ ] **Step 3: `npm test` → FAIL, implement, `npm test` → PASS.**
-- [ ] **Step 4: Verify the build wiring** — `npm run build` → assert files land in `src/tradingbot/api/static/` (index.html + assets/); then from repo root `uv run --extra dev pytest tests/api/ -q` still green (static route serves the new index.html).
+- [ ] **Step 4: Verify the build wiring** — `npm run build` → assert files land in `src/tradingbot/api/static/` (index.html + assets/). **HARD REQUIREMENT: `ui/index.html` MUST contain the literal string "TradingBot"** (use `<title>TradingBot</title>`) — the committed Python test `test_root_serves_placeholder_html` asserts `"TradingBot" in r.text` on the RAW served HTML (before any JS runs; a React-rendered header does NOT satisfy it). Then from repo root `uv run --extra dev pytest tests/api/ -q` still green.
 - [ ] **Step 5: Commit** — `feat(ui): Vite/React scaffold, typed API client + query hooks, theme shell` (include built static output; add a README note: "ui/ builds into api/static — rebuild with `cd ui && npm run build`").
 
 ---
@@ -121,7 +127,7 @@ export const fmtPct = (v: number | null | undefined, dp = 1): string => v == nul
 
 ```ts
 // RunTimeline: props { runs: RunHeader[]; selectedId: string | null; onSelect(id: string): void }
-// - renders a horizontal chip strip: `${run_date} · ${counts.elected}/${counts.total}`; selected chip highlighted;
+// - renders a horizontal chip strip: `${run_date} · ${HH:mm from generated_at} · ${counts.elected}/${counts.total}` (time disambiguates same-day runs — run_id is second-resolution); selected chip highlighted;
 // - a "Latest" pin button selects runs[0]; ArrowLeft/ArrowRight on window navigate older/newer (bounded);
 // - keyboard listener attached on mount, removed on unmount.
 
@@ -140,7 +146,7 @@ export const fmtPct = (v: number | null | undefined, dp = 1): string => v == nul
 ## Task 3: RunGrid + StatusChips + app composition (after Task 2)
 
 **Files:**
-- Create: `ui/src/features/runs/RunGrid.tsx`, `ui/src/features/runs/StatusChips.tsx`, test `RunGrid.test.tsx`; Modify: `ui/src/App.tsx` (full composition + loading/error/empty states)
+- Create: `ui/src/features/runs/RunGrid.tsx`, `ui/src/features/runs/StatusChips.tsx`, `ui/src/features/runs/filterRows.ts`, tests `RunGrid.test.tsx`, `filterRows.test.ts`; Modify: `ui/src/App.tsx` (full composition + loading/error/empty states)
 
 **Interfaces:**
 
@@ -149,13 +155,14 @@ export const fmtPct = (v: number | null | undefined, dp = 1): string => v == nul
 //               reasonFacet: { reason: string; count: number }[]; activeReason: string | null; onReason(r: string | null): void }
 // - three chips with counts; when value==="dropped", renders the drop-reason facet chips (computed by parent from rows).
 
-// RunGrid: props { rows: SymbolRow[]; status: "all"|"elected"|"dropped"; reason: string | null; search: string }
-// - TanStack useReactTable, getCoreRowModel + getSortedRowModel + getFilteredRowModel;
+// RunGrid: props { rows: SymbolRow[] }  — receives the FINAL, already-filtered rows (single model: the
+//   parent applies filterRows(); the grid does SORT + RENDER only — no filter props, no getFilteredRowModel);
+// - TanStack useReactTable, getCoreRowModel + getSortedRowModel;
 // - columns (id, header, cell): symbol (bold), status (badge), timesfm_view (from timesFmView(trade) — header "TimesFM view"),
 //   score (fmtNum 3), upside_pct (fmtPct, green/red class by sign), band_pct (fmtNum 1), pcr (fmtNum 2),
 //   sentiment, catalyst_stack, catalyst (truncate w/ title tooltip), targets_t1 (targets?.t1 ?? null, fmtNum 1), entry_ltp (fmtNum 1), reason;
 // - multi-sort enabled (shift-click); default sort: status elected-first then score desc;
-// - filtering: status + reason applied via a parent-level pre-filter (props), search matches symbol OR catalyst case-insensitively (parent filters too — grid receives final rows; TanStack handles SORT only). Keep filter logic in App/pure helpers, not in column defs;
+// - filtering lives ENTIRELY in features/runs/filterRows.ts: filterRows(rows, status, reason, search) — status/reason exact-match, search matches symbol OR catalyst case-insensitively; App calls it and passes the result to RunGrid;
 // - `/` key focuses the search input (in App).
 
 // App composition: useRuns → RunTimeline; selected run (default latest) → useRun + useDiff → DiffBanner + RunGrid;
