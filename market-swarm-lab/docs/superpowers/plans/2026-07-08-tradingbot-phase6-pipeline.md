@@ -14,8 +14,8 @@
 - Prerequisites: Phases 3–5 merged (commit `a2cd4e4` state, 254 tests green). The interface inventory below is ground truth — consume EXACT signatures; do not invent.
 - **Candidacy semantics (SRC-faithful):** every candidate is buy-intent; TimesFM annotates and never filters EXCEPT the SRC `no_forecast` rule — a symbol whose forecast is unavailable is dropped `NO_FORECAST` (SRC raised/skipped before the candidacy branch; no formulaic fallback, no fabricated upside). `forecast.enabled=False` behaves exactly like SRC `ENABLE_TIMESFM=false`: warm-up fails → every forecastable symbol drops `NO_FORECAST`.
 - **History semantics (SRC-faithful):** ohlcv fetch failure → `closes=[float(ltp)]`, `history_ok=False`; then `len(closes) < min_bars` drops as `DATA_THROTTLED` when `history_ok=False` else `INSUFFICIENT_HISTORY`.
-- **Named deferrals (Phase 7+, NOT bugs):** deals/shareholding/delivery collectors were never ported (out of Phase 3 scope) → `ConvictionFlags.has_deal=None, promoter_trend=None` and `catalyst_stack(source_audit, has_deal=None)`; storage/CLI/API consume `RunResult` in Phase 7.
-- Per-symbol fail-soft: any unexpected exception in a symbol's fetch drops that symbol (`DropReason.DATA_THROTTLED` if rate-limit-shaped, else record in `RunResult.errors`) — never crashes the run.
+- **Named deferrals (Phase 7+, NOT bugs):** deals/shareholding/delivery collectors were never ported (out of Phase 3 scope) → `ConvictionFlags.has_deal=None, promoter_trend=None` and `catalyst_stack(source_audit, has_deal=None)`; **pre-open and FII-DII flow** (SRC soft flags / spec §2 bulk items) are likewise not ported yet; storage/CLI/API consume `RunResult` in Phase 7.
+- Per-symbol fail-soft mechanics (exact, SRC-faithful — no rate-limit-shape branching inside fetch): `price()` (LTP) failure → `FetchResult.error` → `RunResult.errors` (symbol produces no Probable; SRC status=error); `ohlcv()` failure → `history_ok=False`, `closes=[float(ltp)]` → the decide history pre-gate drops it `DATA_THROTTLED`. Circuit/options/news failures degrade those fields to None. A run never crashes on a symbol.
 - Full suite + ruff green at end; commit per task; parallel-safety rules as prior phases (explicit-path `git add`, index.lock retry, own-test-paths until integration task).
 
 ## Interface ground truth (from the committed tree — consume, don't redefine)
@@ -26,7 +26,7 @@
 - `SurveillanceLiquidityGuard.from_settings(settings)`; **sync** `filter(symbols, today=None)->list[str]`, `top_by_turnover(symbols, n)->list[str]`.
 - `MarketContextBuilder.from_settings(settings, market)`; **async** `build(turnover_cr: dict[str,float])->MarketContext`.
 - `TimesFMForecaster.from_settings(settings)`; **sync** `warm_up()->bool`, **sync** `forecast_batch(series, horizon=None)->dict[str, Forecast]` (raises `ForecastUnavailable` if model unloaded; symbols with <2 points silently absent).
-- Gates (all **sync** `evaluate(candidate, market, ctx)->GateResult`): `CircuitGate(settings.gates_circuit)`, `SectorGate(settings.gates_sector)`, `RegimeGate(settings.gates_regime)`, `FirstFifteenGate(settings.gates_first15, clock=None)`, `CompositeGate(list)` (first block wins). NOTE: `FirstFifteenGate` is NOT exported from `gates/__init__.py` yet — Task 1 fixes.
+- Gates (all **sync** `evaluate(candidate, market, ctx)->GateResult`), listed in the SRC-faithful composition order — `CircuitGate(settings.gates_circuit)`, `RegimeGate(settings.gates_regime)`, `SectorGate(settings.gates_sector)`, `FirstFifteenGate(settings.gates_first15, clock=None)` — then `CompositeGate(list)` (first block wins; authoritative order restated in Task 4). NOTE: `FirstFifteenGate` is NOT exported from `gates/__init__.py` yet — Task 1 fixes.
 - `WatchlistScorer(settings.scoring)` (no from_settings); **sync** `score(candidate, market, forecast|None, flags, ctx)->ScoredResult`.
 - `scoring/flags.py`: `pcr_label(pcr)`, `oi_buildup_label(call_chg, put_chg)`, `catalyst_stack(source_audit, has_deal)->(count, sources, stacked)`.
 - Domain: `Candidate(symbol, catalyst)`, `MarketData(ltp, closes, history_ok, circuit, options, intraday_bars=None)`, `ConvictionFlags(sentiment, catalyst_stack, has_deal, promoter_trend, oi_buildup)`, `Probable(symbol, status, drop_reason, score, forecast, market, catalyst, flags)`, enums as committed.
@@ -42,6 +42,7 @@ src/tradingbot/
 ├── gates/__init__.py           # MODIFY: export FirstFifteenGate
 ├── providers/discovery/guard.py# MODIFY: + public turnover_cr() accessor
 └── pipeline/
+    ├── types.py                # FetchResult (shared by fetch+decide — created in Task 1 so Groups A/B are disjoint)
     ├── __init__.py             # exports Screener, RunResult re-export
     ├── fetch.py                # per-symbol market+news fetch stage (async, fail-soft)
     ├── decide.py               # pure decide stage: pre-gate drops + gates + flags + score → Probable
@@ -55,9 +56,26 @@ tests/pipeline/  (+ appends to tests/domain/, tests/config/, tests/gates/, tests
 
 **Files:**
 - Modify: `src/tradingbot/domain/models.py`, `src/tradingbot/config/settings.py`, `src/tradingbot/gates/__init__.py`, `src/tradingbot/providers/discovery/guard.py`
-- Test: append to `tests/domain/test_models.py`, `tests/config/test_settings.py`, `tests/gates/test_gates.py` (or the committed gates test module), `tests/providers/discovery/` guard tests
+- Create: `src/tradingbot/pipeline/__init__.py` (empty), `src/tradingbot/pipeline/types.py`, `tests/pipeline/__init__.py` (empty)
+- Test: append to `tests/domain/test_models.py`, `tests/config/test_settings.py`, `tests/gates/test_gates.py` (or the committed gates test module), `tests/providers/discovery/` guard tests; create `tests/pipeline/test_types.py`
 
 **Interfaces (produced):**
+- `FetchResult` (frozen dataclass, `pipeline/types.py` — the shared handoff type; lives in pipeline, not domain, because it references `NewsBundle` from providers and domain must stay import-free):
+
+```python
+from tradingbot.domain.models import MarketData
+from tradingbot.providers.news.aggregator import NewsBundle
+
+@dataclass(frozen=True)
+class FetchResult:
+    symbol: str
+    market: MarketData | None          # None only when even LTP failed (symbol errored)
+    news: NewsBundle | None            # None when the aggregator itself crashed (rare; sources fail soft)
+    error: str | None = None           # non-None => symbol errored (fail-soft)
+```
+
+  `tests/pipeline/test_types.py`: construct a FetchResult (happy + errored shapes), assert frozen.
+
 - `RunResult` (frozen dataclass, `domain/models.py`):
 
 ```python
@@ -120,21 +138,14 @@ def test_turnover_cr_accessor_after_filter(...):
 ## Task 2: `pipeline/fetch.py` — per-symbol fetch stage (Group A)
 
 **Files:**
-- Create: `src/tradingbot/pipeline/__init__.py` (empty for now), `src/tradingbot/pipeline/fetch.py`
-- Test: `tests/pipeline/__init__.py` (empty), `tests/pipeline/test_fetch.py`
+- Create: `src/tradingbot/pipeline/fetch.py` (pipeline/__init__.py and types.py already exist from Task 1)
+- Test: `tests/pipeline/test_fetch.py`
 
 **Interfaces:**
-- Consumes: `MarketDataProvider`, `NewsAggregator.collect`, domain models, `PipelineSettings`, `First15Settings`.
+- Consumes: `FetchResult` (import from `tradingbot.pipeline.types` — do NOT redefine), `MarketDataProvider`, `NewsAggregator.collect`, domain models, `PipelineSettings`, `First15Settings`.
 - Produces:
 
 ```python
-@dataclass(frozen=True)
-class FetchResult:
-    symbol: str
-    market: MarketData | None          # None only when even LTP failed (symbol errored)
-    news: NewsBundle | None            # None when the aggregator itself crashed (rare; sources fail soft)
-    error: str | None                  # non-None => symbol errored (fail-soft)
-
 async def fetch_symbol(symbol: str, market: MarketDataProvider, news: NewsAggregator,
                        pipeline: PipelineSettings, first15: First15Settings) -> FetchResult: ...
 
@@ -163,7 +174,7 @@ async def fetch_all(symbols: list[str], market: MarketDataProvider, news: NewsAg
 - Test: `tests/pipeline/test_decide.py`
 
 **Interfaces:**
-- Consumes: `FetchResult` (import from `tradingbot.pipeline.fetch`), `Forecast`, `MarketContext`, `CompositeGate`, `WatchlistScorer`, `scoring.flags`, `PipelineSettings`.
+- Consumes: `FetchResult` (import from `tradingbot.pipeline.types` — NOT from fetch.py; this keeps Task 3 genuinely parallel with Task 2), `Forecast`, `MarketContext`, `CompositeGate`, `WatchlistScorer`, `scoring.flags`, `PipelineSettings`.
 - Produces:
 
 ```python
@@ -178,14 +189,14 @@ def decide_all(results: list[FetchResult], catalysts: dict[str, Catalyst],
 
 **Semantics (PORT of SRC `_process_symbol` decision order, candidacy mode):**
 1. Build `candidate = Candidate(fr.symbol, catalyst)`.
-2. **History pre-gate** (before anything else, SRC order): `market.history_ok is False or len(market.closes) < pipeline.min_bars` → dropped, reason `DATA_THROTTLED` if `not history_ok` else `INSUFFICIENT_HISTORY`; score=None, forecast=None.
-3. **Forecast rule:** if `forecasting_enabled` and `fr.symbol not in forecasts` → dropped `NO_FORECAST` (SRC: no fabricated upside; symbols with <2 closes or an unloaded model are absent from `forecast_batch`'s dict). If `forecasting_enabled is False` → the SRC `ENABLE_TIMESFM=false` contract: dropped `NO_FORECAST` as well (`forecast=None`). The elected path always carries a real `Forecast`.
+2. **History pre-gate** (before anything else, SRC order — SRC parity: the gate condition is length ONLY): `len(market.closes) < pipeline.min_bars` → dropped, reason `DATA_THROTTLED` if `not market.history_ok` else `INSUFFICIENT_HISTORY` (history_ok is used solely for the reason choice, exactly as SRC); score=None, forecast=None.
+3. **Forecast rule:** if `forecasting_enabled` and `fr.symbol not in forecasts` → dropped `NO_FORECAST` with `score=None, forecast=None` (SRC: the no_forecast return happens BEFORE the watchlist score is computed — no fabricated upside; symbols with <2 closes or an unloaded model are absent from `forecast_batch`'s dict). If `forecasting_enabled is False` → the SRC `ENABLE_TIMESFM=false` contract: dropped `NO_FORECAST` the same way (`score=None, forecast=None`). The elected path always carries a real `Forecast`.
 4. **Flags (soft, never gate):** `ConvictionFlags(sentiment=fr.news.sentiment.score if fr.news else None, catalyst_stack=catalyst_stack(fr.news.source_audit if fr.news else {}, has_deal=None)[0], has_deal=None, promoter_trend=None, oi_buildup=oi_buildup_label(market.options.call_oi_change, market.options.put_oi_change) if market.options else None)`.
 5. **Gates:** `gate.evaluate(candidate, market, ctx)` → blocked ⇒ dropped with the gate's `DropReason`; still SCORED (SRC run docs carry scores on gate-dropped rows).
-6. **Score:** `scorer.score(candidate, market, forecast, flags, ctx)` for every symbol that passed the history pre-gate (dropped-by-gate included; history-dropped and errored symbols get score=None).
-7. `decide_all`: errored FetchResults (`fr.error is not None` / `market is None`) produce NO Probable (they land in `RunResult.errors` — Task 4); order of probables: elected first, then dropped, each sorted by score desc (None last) — the SRC `run_to_doc` ordering.
+6. **Score:** `scorer.score(candidate, market, forecast, flags, ctx)` for every symbol that passed the history pre-gate AND the forecast rule (gate-dropped included — SRC run docs carry scores on gate-dropped rows; history-dropped, no-forecast-dropped, and errored symbols get score=None).
+7. `decide_all`: errored FetchResults (`fr.error is not None` / `market is None`) produce NO Probable (they land in `RunResult.errors` — Task 4); order of probables: elected first, then dropped, each sorted by score desc (None last) — the SRC `run_to_doc` ordering. (Phase-7 parity notes for the RunDoc mapping, no Phase-6 change: SRC's sort key `-(score or -1)` treats an exact 0.0 score as falsy and sorts it with the Nones — decide whether to replicate that quirk; and SRC folds errored symbols into dropped rows with reason "error" counted in total/dropped, so the RunDoc mapping must re-fold `RunResult.errors` to keep counts identical.)
 
-- [ ] **Step 1: Write failing tests** — pure fixtures, no asyncio: history_ok=False short closes → DATA_THROTTLED; history_ok=True short closes → INSUFFICIENT_HISTORY; missing forecast (enabled) → NO_FORECAST; forecasting disabled → NO_FORECAST for all; gate-blocked symbol is dropped with the gate reason AND has a non-None score; elected symbol carries forecast+score+flags; flags assembled from news/options exactly (incl. all-None when news/options absent); errored FetchResult produces no Probable; ordering (elected-first, score desc, None-score last).
+- [ ] **Step 1: Write failing tests** — pure fixtures, no asyncio: history_ok=False short closes → DATA_THROTTLED; history_ok=True short closes → INSUFFICIENT_HISTORY; missing forecast (enabled) → NO_FORECAST with score=None; forecasting disabled → NO_FORECAST for all; gate-blocked symbol is dropped with the gate reason AND has a non-None score; elected symbol carries forecast+score+flags; flags assembled from news/options exactly (incl. all-None when news/options absent); errored FetchResult produces no Probable; ordering (elected-first, score desc, None-score last).
 - [ ] **Step 2: FAIL → Step 3: implement → Step 4: PASS (tests/pipeline/test_decide.py only) → Step 5: Commit** — `feat(pipeline): pure decide stage (history pre-gate, no-forecast rule, gates+score)`
 
 ---
