@@ -82,7 +82,9 @@ export interface RunHeader { run_id: string; run_date: string; generated_at: str
 export interface SymbolRow { symbol: string; status: "elected" | "dropped"; reason: string | null;
   trade: "CALL" | "PUT" | "HOLD" | null; score: number | null; upside_pct: number | null;
   band_pct: number | null; size_factor: number | null; pcr: number | null; sentiment: string | null;
-  catalyst_stack: number | null;   // null on error-fold rows (dict.fromkeys) — cells must handle it factors: null;   // storage/doc.py always emits None today — retype when factors are ever carried targets: { t1: number; t1_scale_pct: number; t2: number; t2_scale_pct: number } | null;
+  catalyst_stack: number | null;   // null on error-fold rows (dict.fromkeys) — cells must handle it
+  factors: null;                   // storage/doc.py always emits None today — retype when factors are carried
+  targets: { t1: number; t1_scale_pct: number; t2: number; t2_scale_pct: number } | null;
   entry_ltp: number | null; catalyst: string | null; catalyst_type: string | null; }
 export interface RunDoc extends RunHeader { symbols: SymbolRow[]; }
 export interface Mover { symbol: string; score: number; prev_score: number; delta: number; }
