@@ -86,11 +86,11 @@ def main() -> None:                  # uvicorn entry: store = MongoRunStore(uri 
 ```
 
 **Routes (dashboard spec §3, read subset — exact paths):**
-1. `GET /api/runs?limit=` → `store.list_runs(limit)` (headers only, as the store already projects). Default limit 90; clamp 1..365.
+1. `GET /api/runs?limit=` → `store.list_runs(limit)` (headers only, as the store already projects). Default limit 90; clamp 1..365. **Named deferral:** the spec's `before=` back-pagination cursor is deferred to 2b — the frozen slice-1 store has no cursor param and limit≤365 covers a year of daily runs; 2b picks it up if the timeline needs it.
 2. `GET /api/runs/latest` → `store.latest_run()`; 404 `{"detail": "no runs saved yet"}` when None.
 3. `GET /api/runs/{run_id}` → `store.get_run(run_id)`; 404 when None. (Register /latest BEFORE /{run_id} so "latest" doesn't match as an id.)
-4. `GET /api/runs/{run_id}/diff` → current = `get_run(run_id)` (404 if missing); previous = the run immediately BEFORE it in `list_runs(365)` order (newest-first list → the entry after current's index; None if current is oldest); return `diff_runs(current_full, previous_full)` — NOTE list_runs rows lack `symbols`, so fetch the previous run's FULL doc via `get_run(prev_run_id)`.
-5. `GET /api/symbols/{symbol}/history?limit_runs=` → full docs of the latest N runs (default 60: iterate `list_runs(60)` ids → `get_run` each) → `symbol_history(runs_oldest_first, symbol)`. (Simple N×get_run is acceptable at this scale — runs are daily; note it in a comment.)
+4. `GET /api/runs/{run_id}/diff` → current = `get_run(run_id)` (404 if missing); previous = the run immediately BEFORE it in `list_runs(365)` order (newest-first list → the entry after current's index; None if current is oldest); return `diff_runs(current_full, previous_full)` — NOTE list_runs rows lack `symbols`, so fetch the previous run's FULL doc via `get_run(prev_run_id)`. **Window-boundary safety:** if `run_id` is valid via get_run but NOT present in the list_runs(365) ids (a run older than the window), treat previous as None (first_run-style diff) — never ValueError/500. Test this case explicitly.
+5. `GET /api/symbols/{symbol}/history?limit_runs=` → full docs of the latest N runs (default 60: iterate `list_runs(60)` ids → `get_run` each) → `symbol_history(runs_oldest_first, symbol)`. **The route MUST reverse the newest-first list_runs order to oldest-first before calling the helper** (symbol_history preserves input order — the reversal is the route's responsibility; the route test must assert ascending run_date in the response). (Simple N×get_run is acceptable at this scale — runs are daily; note it in a comment.)
 6. `GET /` → serve `api/static/index.html` (FileResponse); `app.mount("/static", StaticFiles(...))`. Placeholder body: `<h1>TradingBot</h1><p>Dashboard UI lands in slice 2b. API is live under /api/…</p>`.
 7. NO write routes. NO /api/positions, /api/views, /api/orders (7b/7d).
 
